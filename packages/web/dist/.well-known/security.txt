@@ -1,0 +1,6 @@
+# Phase 6 T6.13 — RFC 9116.
+# Replace placeholder values during Phase 6 (after DP-6.1 — final domain).
+Contact: mailto:security@knights-castles.example
+Expires: 2027-01-01T00:00:00.000Z
+Preferred-Languages: en, ru
+Canonical: https://knights-castles.example/.well-known/security.txt

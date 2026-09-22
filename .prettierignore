@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+playwright-report
+test-results
+pnpm-lock.yaml
+packages/web/public
+packages/web/index.html
+packages/web/src/main.ts
+marketing
+*.md

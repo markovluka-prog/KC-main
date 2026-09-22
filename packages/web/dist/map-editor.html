@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Редактор карт — Рыцари и Замки</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #12111a;
+    color: #e8dfc8;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    background: #1e1b2e;
+    border-bottom: 2px solid #3a2f1a;
+    padding: 10px 18px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 17px; color: #f2c14f; letter-spacing: 0.5px; }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+
+  .btn {
+    background: #2a2440;
+    border: 1px solid #4a3f60;
+    color: #e8dfc8;
+    padding: 6px 14px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .btn:hover { background: #3a3060; border-color: #7060a0; }
+  .btn.primary { background: #3a2a08; border-color: #f2c14f; color: #f2c14f; }
+  .btn.primary:hover { background: #5a4210; }
+  .btn.danger { background: #3a0a0a; border-color: #e35757; color: #e35757; }
+  .btn.danger:hover { background: #5a1010; }
+
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ─── Palette ─────────────────────────────────── */
+  .palette {
+    width: 200px;
+    background: #1a1728;
+    border-right: 2px solid #2e2640;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+
+  .palette-section { padding: 10px 10px 6px; }
+  .palette-section h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #8a7a5a;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #2e2640;
+  }
+
+  .palette-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+  .tile-btn {
+    background: #221e34;
+    border: 2px solid #3a3060;
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 6px 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .tile-btn:hover { border-color: #7060a0; background: #2e2a48; }
+  .tile-btn.active { border-color: #f2c14f; background: #3a2e08; }
+
+  .tile-btn canvas {
+    width: 44px;
+    height: 44px;
+    image-rendering: pixelated;
+    border-radius: 3px;
+  }
+  .tile-btn span {
+    font-size: 10px;
+    color: #b0a090;
+    text-align: center;
+    line-height: 1.2;
+  }
+  .tile-btn.active span { color: #f2c14f; }
+
+  .eraser-btn {
+    grid-column: span 2;
+    flex-direction: row;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px;
+    background: #1e1c30;
+    border-color: #3a3060;
+  }
+  .eraser-btn span { font-size: 12px; }
+
+  /* ─── Canvas area ─────────────────────────────── */
+  .canvas-area {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    background: #0e0d18;
+    padding: 20px;
+  }
+
+  #mapCanvas {
+    image-rendering: pixelated;
+    cursor: crosshair;
+    border: 2px solid #3a2f1a;
+    border-radius: 4px;
+    box-shadow: 0 0 40px rgba(0,0,0,0.6);
+  }
+
+  /* ─── Right panel / info ──────────────────────── */
+  .info-panel {
+    width: 180px;
+    background: #1a1728;
+    border-left: 2px solid #2e2640;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .info-panel h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #8a7a5a;
+    border-bottom: 1px solid #2e2640;
+    padding-bottom: 4px;
+  }
+
+  .info-row { display: flex; justify-content: space-between; color: #b0a090; }
+  .info-val { color: #e8dfc8; }
+
+  .cursor-info {
+    background: #221e34;
+    border: 1px solid #3a3060;
+    border-radius: 4px;
+    padding: 8px;
+    color: #9a8a6a;
+    font-size: 11px;
+    min-height: 40px;
+  }
+
+  .stats-block { display: flex; flex-direction: column; gap: 6px; }
+
+  .json-output {
+    background: #0e0d18;
+    border: 1px solid #2e2640;
+    border-radius: 4px;
+    padding: 6px;
+    font-size: 10px;
+    color: #6a8aaa;
+    font-family: monospace;
+    overflow: auto;
+    flex: 1;
+    white-space: pre;
+  }
+
+  .help-text {
+    font-size: 11px;
+    color: #6a5a4a;
+    line-height: 1.5;
+  }
+  .help-text b { color: #9a8a6a; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚔️ Редактор карт</h1>
+  <span style="font-size:12px;color:#7a6a50">20 × 20</span>
+  <div class="toolbar">
+    <button class="btn" id="btnClear">🗑 Очистить</button>
+    <button class="btn" id="btnLoad">📂 Загрузить</button>
+    <button class="btn primary" id="btnSave">💾 Сохранить JSON</button>
+    <input type="file" id="fileInput" accept=".json" style="display:none">
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- ─── Palette ─────────────────────────────── -->
+  <div class="palette">
+
+    <div class="palette-section">
+      <h3>Инструмент</h3>
+      <div class="palette-grid">
+        <div class="tile-btn eraser-btn active" data-type="erase" id="erase-btn">
+          <canvas id="preview-erase" width="44" height="44"></canvas>
+          <span>Трава / ластик</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="palette-section">
+      <h3>Ландшафт</h3>
+      <div class="palette-grid">
+        <div class="tile-btn" data-type="river">
+          <canvas id="preview-river" width="44" height="44"></canvas>
+          <span>Река</span>
+        </div>
+        <div class="tile-btn" data-type="bridge">
+          <canvas id="preview-bridge" width="44" height="44"></canvas>
+          <span>Мост</span>
+        </div>
+        <div class="tile-btn" data-type="mountain">
+          <canvas id="preview-mountain" width="44" height="44"></canvas>
+          <span>Гора</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="palette-section">
+      <h3>Повороты реки</h3>
+      <div class="palette-grid">
+        <div class="tile-btn" data-type="river_nw">
+          <canvas id="preview-river_nw" width="44" height="44"></canvas>
+          <span>↖ Сев-Зап</span>
+        </div>
+        <div class="tile-btn" data-type="river_ne">
+          <canvas id="preview-river_ne" width="44" height="44"></canvas>
+          <span>↗ Сев-Вост</span>
+        </div>
+        <div class="tile-btn" data-type="river_sw">
+          <canvas id="preview-river_sw" width="44" height="44"></canvas>
+          <span>↙ Юг-Зап</span>
+        </div>
+        <div class="tile-btn" data-type="river_se">
+          <canvas id="preview-river_se" width="44" height="44"></canvas>
+          <span>↘ Юг-Вост</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="palette-section">
+      <h3>Здания</h3>
+      <div class="palette-grid">
+        <div class="tile-btn" data-type="castle_blue">
+          <canvas id="preview-castle_blue" width="44" height="44"></canvas>
+          <span>Замок<br>Синий (4×4)</span>
+        </div>
+        <div class="tile-btn" data-type="castle_red">
+          <canvas id="preview-castle_red" width="44" height="44"></canvas>
+          <span>Замок<br>Красный (4×4)</span>
+        </div>
+        <div class="tile-btn" data-type="tower">
+          <canvas id="preview-tower" width="44" height="44"></canvas>
+          <span>Башня<br>Мага (1×1)</span>
+        </div>
+        <div class="tile-btn" data-type="ruins">
+          <canvas id="preview-ruins" width="44" height="44"></canvas>
+          <span>Руины (2×2)</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ─── Canvas ──────────────────────────────── -->
+  <div class="canvas-area">
+    <canvas id="mapCanvas" width="600" height="600"></canvas>
+  </div>
+
+  <!-- ─── Info panel ──────────────────────────── -->
+  <div class="info-panel">
+    <div>
+      <h3>Курсор</h3>
+      <div class="cursor-info" id="cursorInfo">Наведите на карту</div>
+    </div>
+
+    <div>
+      <h3>Статистика</h3>
+      <div class="stats-block" id="statsBlock">
+        <div class="info-row"><span>Река</span><span class="info-val" id="stat-river">0</span></div>
+        <div class="info-row"><span>Мост</span><span class="info-val" id="stat-bridge">0</span></div>
+        <div class="info-row"><span>Горы</span><span class="info-val" id="stat-mountain">0</span></div>
+        <div class="info-row"><span>Замки</span><span class="info-val" id="stat-castle">0</span></div>
+        <div class="info-row"><span>Башни</span><span class="info-val" id="stat-tower">0</span></div>
+        <div class="info-row"><span>Руины</span><span class="info-val" id="stat-ruins">0</span></div>
+      </div>
+    </div>
+
+    <div>
+      <h3>Управление</h3>
+      <div class="help-text">
+        <b>ЛКМ</b> — нарисовать<br>
+        <b>ПКМ</b> — стереть<br>
+        <b>Drag</b> — рисовать/стирать<br>
+        <b>Ctrl+Z</b> — отмена<br>
+        <b>1-4</b> — трава/река/мост/гора<br>
+        <b>Q W A S</b> — повороты реки<br>
+        <b>5-8</b> — здания
+      </div>
+    </div>
+
+    <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;gap:6px">
+      <h3>JSON-превью</h3>
+      <div class="json-output" id="jsonOutput">{}
+</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const COLS = 20, ROWS = 20, S = 30; // cell size in px
+  const canvas = document.getElementById('mapCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // ── Asset loading ──────────────────────────────────────────────
+  const ROOT = '/tiny-swords/Tiny Swords (Free Pack)/';
+  const IMGS = {};
+  let loadedCount = 0, totalCount = 0;
+
+  function loadImg(key, src) {
+    totalCount++;
+    const img = new Image();
+    img.onload = () => { loadedCount++; render(); renderPreviews(); };
+    img.onerror = () => { loadedCount++; render(); };
+    img.src = src;
+    IMGS[key] = img;
+  }
+
+  loadImg('grass',       ROOT + 'Terrain/Tileset/Tilemap_color1.png');
+  loadImg('water_bg',    ROOT + 'Terrain/Tileset/Water Background color.png');
+  loadImg('castle_blue', ROOT + 'Buildings/Blue Buildings/Castle.png');
+  loadImg('castle_red',  ROOT + 'Buildings/Red Buildings/Castle.png');
+  loadImg('tower',       ROOT + 'Buildings/Blue Buildings/Tower.png');
+  loadImg('ruins',       '/assets/custom/ruins_custom.png');
+
+  // ── Map state ──────────────────────────────────────────────────
+  // Terrain layer: per-cell type ('' = grass, 'river', 'bridge', 'mountain')
+  const terrain = Array.from({length: ROWS}, () => Array(COLS).fill(''));
+
+  // Buildings: list of placed objects
+  // Each: { type: 'castle_blue'|'castle_red'|'tower'|'ruins', row, col }
+  const buildings = [];
+
+  // Undo stack
+  const undoStack = [];
+  const MAX_UNDO = 50;
+
+  function snapshot() {
+    undoStack.push({
+      terrain: terrain.map(r => r.slice()),
+      buildings: buildings.map(b => ({...b})),
+    });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+  }
+
+  function undo() {
+    if (!undoStack.length) return;
+    const s = undoStack.pop();
+    for (let r = 0; r < ROWS; r++) terrain[r] = s.terrain[r].slice();
+    buildings.length = 0;
+    s.buildings.forEach(b => buildings.push({...b}));
+    render();
+    updateStats();
+    updateJson();
+    saveToLocal();
+  }
+
+  // ── Tool state ─────────────────────────────────────────────────
+  let activeTool = 'erase';
+  let painting = false;
+  let paintMode = 'draw'; // 'draw' | 'erase'
+
+  // ── Building helpers ───────────────────────────────────────────
+  const BUILDING_SIZE = {
+    castle_blue: { w: 4, h: 4 },
+    castle_red:  { w: 4, h: 4 },
+    tower:       { w: 1, h: 1 },
+    ruins:       { w: 2, h: 2 },
+  };
+  const TERRAIN_TYPES = ['river', 'bridge', 'mountain', 'river_nw', 'river_ne', 'river_sw', 'river_se'];
+
+  function isTerrain(type) { return TERRAIN_TYPES.includes(type); }
+  function isBuilding(type) { return type in BUILDING_SIZE; }
+
+  function buildingAt(row, col) {
+    return buildings.find(b => {
+      const sz = BUILDING_SIZE[b.type];
+      return row >= b.row && row < b.row + sz.h &&
+             col >= b.col && col < b.col + sz.w;
+    });
+  }
+
+  function removeBuilding(b) {
+    const idx = buildings.indexOf(b);
+    if (idx !== -1) buildings.splice(idx, 1);
+  }
+
+  // ── Draw cell ──────────────────────────────────────────────────
+  function drawGrassCell(x, y, row, col) {
+    const grassImg = IMGS['grass'];
+    if (grassImg && grassImg.complete && grassImg.naturalWidth > 0) {
+      ctx.drawImage(grassImg, 64, 64, 64, 64, x, y, S, S);
+      ctx.fillStyle = (row + col) % 2 === 0 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)';
+      ctx.fillRect(x, y, S, S);
+    } else {
+      ctx.fillStyle = (row + col) % 2 === 0 ? '#5a8a3a' : '#4e7832';
+      ctx.fillRect(x, y, S, S);
+    }
+  }
+
+  function drawRiverCell(x, y) {
+    ctx.fillStyle = '#1a4fa0';
+    ctx.fillRect(x, y, S, S);
+    ctx.fillStyle = '#2266cc';
+    ctx.fillRect(x, y + S * 0.2, S, S * 0.6);
+    ctx.fillStyle = '#5599ee';
+    ctx.fillRect(x, y + S * 0.35, S, 2);
+    ctx.fillRect(x, y + S * 0.62, S, 2);
+    ctx.fillStyle = 'rgba(200,230,255,0.4)';
+    ctx.fillRect(x + S * 0.1, y + S * 0.45, S * 0.3, 1);
+    ctx.fillRect(x + S * 0.5, y + S * 0.55, S * 0.35, 1);
+  }
+
+  // Bridge running N-S (planks span E-W, railings on E and W sides).
+  // Used when the river flows E-W (neighbors to E or W are river-family).
+  function drawNSBridge(x, y) {
+    ctx.fillStyle = '#1a4fa0';
+    ctx.fillRect(x, y, S, S);
+    const bx = x + Math.floor(S * 0.15);
+    const bw = Math.floor(S * 0.70);
+    ctx.fillStyle = '#8b5e18'; ctx.fillRect(bx, y, bw, S);
+    ctx.fillStyle = '#a67020'; ctx.fillRect(bx + 2, y, bw - 4, S);
+    ctx.fillStyle = '#5a3a08';
+    for (let p = 1; p < 4; p++)
+      ctx.fillRect(bx, y + Math.floor((S / 4) * p), bw, 2);
+    ctx.fillStyle = '#3a2005';
+    ctx.fillRect(bx,           y, 3, S);
+    ctx.fillRect(bx + bw - 3,  y, 3, S);
+  }
+
+  // Bridge running E-W (planks span N-S, railings on N and S sides).
+  // Used when the river flows N-S (neighbors to N or S are river-family).
+  function drawEWBridge(x, y) {
+    ctx.fillStyle = '#1a4fa0';
+    ctx.fillRect(x, y, S, S);
+    const by = y + Math.floor(S * 0.15);
+    const bh = Math.floor(S * 0.70);
+    ctx.fillStyle = '#8b5e18'; ctx.fillRect(x, by, S, bh);
+    ctx.fillStyle = '#a67020'; ctx.fillRect(x, by + 2, S, bh - 4);
+    ctx.fillStyle = '#5a3a08';
+    for (let p = 1; p < 4; p++)
+      ctx.fillRect(x + Math.floor((S / 4) * p), by, 2, bh);
+    ctx.fillStyle = '#3a2005';
+    ctx.fillRect(x, by,           S, 3);
+    ctx.fillRect(x, by + bh - 3,  S, 3);
+  }
+
+  // Auto-orient bridge based on river-family neighbours.
+  // E/W river → NS bridge; N/S river → EW bridge; both or neither → NS.
+  function drawBridgeCell(x, y, row, col) {
+    const ew = connects(row, col, 'e') || connects(row, col, 'w');
+    const ns = connects(row, col, 'n') || connects(row, col, 's');
+    if (ns && !ew) drawEWBridge(x, y);
+    else            drawNSBridge(x, y); // default and ew-river case
+  }
+
+  // River turn cells: variant = 'nw'|'ne'|'sw'|'se'
+  // Each variant connects two perpendicular edges via a quarter-circle arc.
+  // `connects` lists which sides this tile links to (used by auto-tiling).
+  const RIVER_TURN_CFG = {
+    river_nw: { ccx: 0, ccy: 0, a1: 0,               a2: Math.PI / 2,        connects: ['n','w'] },
+    river_ne: { ccx: 1, ccy: 0, a1: Math.PI / 2,     a2: Math.PI,            connects: ['n','e'] },
+    river_sw: { ccx: 0, ccy: 1, a1: 3 * Math.PI / 2, a2: 2 * Math.PI,       connects: ['s','w'] },
+    river_se: { ccx: 1, ccy: 1, a1: Math.PI,          a2: 3 * Math.PI / 2,   connects: ['s','e'] },
+  };
+
+  // ── Auto-tiling helpers ────────────────────────────────────────
+  function isRiverFamily(type) {
+    return type === 'river' || type === 'bridge' || type in RIVER_TURN_CFG;
+  }
+
+  // Returns true if the neighbor in direction `dir` from (row,col) connects
+  // back toward this cell.
+  function connects(row, col, dir) {
+    const offsets = { n:[-1,0], s:[1,0], e:[0,1], w:[0,-1] };
+    const [dr, dc] = offsets[dir];
+    const nr = row + dr, nc = col + dc;
+    if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) return false;
+    const nt = terrain[nr][nc];
+    if (!isRiverFamily(nt)) return false;
+    // Turn tiles only connect on their two declared sides; check the opposite.
+    if (nt in RIVER_TURN_CFG) {
+      const opp = { n:'s', s:'n', e:'w', w:'e' }[dir];
+      return RIVER_TURN_CFG[nt].connects.includes(opp);
+    }
+    return true; // 'river' and 'bridge' connect on all sides
+  }
+
+  // Draw an auto-tiled river cell: the shape adapts to N/S/E/W neighbours.
+  // Each connected side draws a half-channel strip; unconnected sides show a
+  // rounded cap so the river visually terminates cleanly.
+  function drawRiverAutoCell(x, y, row, col) {
+    drawGrassCell(x, y, row, col);
+
+    const n = connects(row, col, 'n');
+    const s = connects(row, col, 's');
+    const e = connects(row, col, 'e');
+    const w = connects(row, col, 'w');
+
+    const hw  = Math.round(S * 0.30); // half channel width  (60 % total)
+    const cx  = x + Math.floor(S / 2);
+    const cy  = y + Math.floor(S / 2);
+
+    // Extent of each channel arm: reaches the cell edge when connected,
+    // or ends hw pixels past centre (a short cap) when not.
+    const top    = n ? y     : cy - hw;
+    const bottom = s ? y + S : cy + hw;
+    const left   = w ? x     : cx - hw;
+    const right  = e ? x + S : cx + hw;
+
+    const hasV = n || s;
+    const hasH = e || w;
+    if (!hasV && !hasH) {
+      // Isolated: small puddle
+      ctx.fillStyle = '#2266cc';
+      ctx.beginPath();
+      ctx.arc(cx, cy, hw * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+
+    // ── Dark water base ──
+    ctx.fillStyle = '#1a4fa0';
+    if (hasV) ctx.fillRect(cx - hw, top,  hw * 2, bottom - top);
+    if (hasH) ctx.fillRect(left, cy - hw, right - left, hw * 2);
+
+    // ── Lighter centre ──
+    const lp = Math.max(2, Math.round(hw * 0.25));
+    ctx.fillStyle = '#2266cc';
+    if (hasV) ctx.fillRect(cx - hw + lp, top,  (hw - lp) * 2, bottom - top);
+    if (hasH) ctx.fillRect(left, cy - hw + lp, right - left, (hw - lp) * 2);
+
+    // ── Ripple lines ──
+    ctx.fillStyle = '#5599ee';
+    if (hasV) ctx.fillRect(cx - 1, top,  2, bottom - top);
+    if (hasH) ctx.fillRect(left, cy - 1, right - left, 2);
+
+    // ── Foam hints ──
+    ctx.fillStyle = 'rgba(200,230,255,0.35)';
+    if (hasV) ctx.fillRect(cx + Math.round(hw * 0.35), top  + 2, 1, bottom - top  - 4);
+    if (hasH) ctx.fillRect(left + 2, cy + Math.round(hw * 0.35), right - left - 4, 1);
+
+    // ── Rounded caps on dead-end sides ──
+    ctx.fillStyle = '#2266cc';
+    if (!n && hasV) { ctx.beginPath(); ctx.arc(cx, cy - hw, hw, Math.PI, 0); ctx.fill(); }
+    if (!s && hasV) { ctx.beginPath(); ctx.arc(cx, cy + hw, hw, 0, Math.PI); ctx.fill(); }
+    if (!w && hasH) { ctx.beginPath(); ctx.arc(cx - hw, cy, hw, 0.5*Math.PI, 1.5*Math.PI); ctx.fill(); }
+    if (!e && hasH) { ctx.beginPath(); ctx.arc(cx + hw, cy, hw, 1.5*Math.PI, 0.5*Math.PI); ctx.fill(); }
+  }
+
+  function drawRiverTurnCell(c, x, y, row, col) {
+    // 1. Grass background
+    drawGrassCell(x, y, row, col);
+
+    const cfg = RIVER_TURN_CFG[c];
+    const cx = x + cfg.ccx * S;
+    const cy = y + cfg.ccy * S;
+    const { a1, a2 } = cfg;
+    const innerR = S * 0.2;
+    const outerR = S * 0.8;
+
+    function annularArc(r1, r2, fillOrStroke, style) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r2, a1, a2, false); // outer arc CW
+      ctx.arc(cx, cy, r1, a2, a1, true);  // inner arc CCW
+      ctx.closePath();
+      if (fillOrStroke === 'fill') { ctx.fillStyle = style; ctx.fill(); }
+      else { ctx.strokeStyle = style; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.restore();
+    }
+
+    // 2. Dark water base
+    annularArc(innerR, outerR, 'fill', '#1a4fa0');
+
+    // 3. Lighter centre band
+    annularArc(innerR + (outerR - innerR) * 0.17, outerR - (outerR - innerR) * 0.17, 'fill', '#2266cc');
+
+    // 4. Highlight arc stroke
+    const midR = (innerR + outerR) / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, midR + 1, a1, a2, false);
+    ctx.strokeStyle = '#5599ee';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    // 5. Foam hint
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, midR - 3, a1 + 0.1, a2 - 0.1, false);
+    ctx.strokeStyle = 'rgba(200,230,255,0.4)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawMountainCell(x, y, row, col) {
+    drawGrassCell(x, y, row, col);
+    const mcx = x + Math.floor(S / 2);
+    const mRows = [
+      [0,  1,  '#f2f6ff', '#d4e0f4', '#ffffff'],
+      [2,  2,  '#e4eeff', '#bccce8', '#f2f6ff'],
+      [4,  4,  '#ccdaf0', '#a0b8d8', '#dce8f8'],
+      [6,  5,  '#a8bcd4', '#7894b8', '#b8cedc'],
+      [8,  7,  '#807888', '#585060', '#90889a'],
+      [10, 8,  '#706878', '#4c4458', '#807080'],
+      [12, 10, '#60586c', '#3c3450', '#706870'],
+      [14, 11, '#544c60', '#302840', '#645c68'],
+      [16, 12, '#483e54', '#241a30', '#584a5c'],
+      [18, 13, '#3c3048', '#180c24', '#4c3c50'],
+      [20, 13, '#30263c', '#0c0210', '#3e3044'],
+      [22, 14, '#241a30', '#241a30', '#241a30'],
+      [24, 14, '#1a1028', '#1a1028', '#1a1028'],
+      [26, 15, '#141028', '#141028', '#141028'],
+      [28, 15, '#100c20', '#100c20', '#100c20'],
+    ];
+    for (const [yo, hw, body, sdw, hlt] of mRows) {
+      ctx.fillStyle = body;
+      ctx.fillRect(mcx - hw, y + yo, hw * 2, 2);
+      if (hw > 2) {
+        ctx.fillStyle = sdw;
+        ctx.fillRect(mcx - hw, y + yo, 2, 2);
+        ctx.fillStyle = hlt;
+        ctx.fillRect(mcx + hw - 2, y + yo, 2, 2);
+      }
+    }
+  }
+
+  function drawBuilding(b) {
+    const sz = BUILDING_SIZE[b.type];
+    const x = b.col * S, y = b.row * S;
+    const w = sz.w * S, h = sz.h * S;
+
+    if (b.type === 'castle_blue' || b.type === 'castle_red') {
+      const key = b.type === 'castle_blue' ? 'castle_blue' : 'castle_red';
+      const img = IMGS[key];
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, x, y, w, h);
+      } else {
+        ctx.fillStyle = b.type === 'castle_blue' ? 'rgba(70,130,220,0.5)' : 'rgba(220,70,70,0.5)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = b.type === 'castle_blue' ? '#6699ff' : '#ff6666';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(b.type === 'castle_blue' ? 'СИНИЙ' : 'КРАСНЫЙ', x + w / 2, y + h / 2);
+      }
+
+    } else if (b.type === 'tower') {
+      const img = IMGS['tower'];
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, x, y, w, h);
+      } else {
+        ctx.fillStyle = '#513c6f';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = '#b89dff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+        ctx.fillStyle = '#decfff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('T', x + w / 2, y + h / 2);
+      }
+
+    } else if (b.type === 'ruins') {
+      const img = IMGS['ruins'];
+      // Green grass base
+      const gc = ctx.createRadialGradient(x + w*0.5, y + h*0.56, w*0.08, x + w*0.5, y + h*0.56, w*0.74);
+      gc.addColorStop(0, '#9fd56e');
+      gc.addColorStop(0.52, '#78aa4e');
+      gc.addColorStop(1, '#4d7038');
+      ctx.fillStyle = gc;
+      ctx.fillRect(x, y, w, h);
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.98;
+        ctx.drawImage(img, 170, 170, 700, 620, x + 3, y + 2, w - 6, h - 4);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = 'rgba(150,120,80,0.6)';
+        ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+        ctx.fillStyle = '#e8d080';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('РУИНЫ', x + w / 2, y + h / 2);
+      }
+    }
+  }
+
+  // ── Main render ────────────────────────────────────────────────
+  function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 1. Ground layer
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const x = col * S, y = row * S;
+        const t = terrain[row][col];
+        if      (t === 'river')       { drawRiverAutoCell(x, y, row, col); }
+        else if (t === 'bridge')      { drawBridgeCell(x, y, row, col); }
+        else if (t === 'mountain')    { drawMountainCell(x, y, row, col); }
+        else if (t in RIVER_TURN_CFG) { drawRiverTurnCell(t, x, y, row, col); }
+        else { drawGrassCell(x, y, row, col); }
+      }
+    }
+
+    // 2. Buildings
+    buildings.forEach(drawBuilding);
+
+    // 3. Grid overlay
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (let c = 0; c <= COLS; c++) {
+      ctx.beginPath();
+      ctx.moveTo(c * S, 0);
+      ctx.lineTo(c * S, ROWS * S);
+      ctx.stroke();
+    }
+    for (let r = 0; r <= ROWS; r++) {
+      ctx.beginPath();
+      ctx.moveTo(0, r * S);
+      ctx.lineTo(COLS * S, r * S);
+      ctx.stroke();
+    }
+  }
+
+  // ── Palette previews ───────────────────────────────────────────
+  function renderPreview(canvasEl, drawFn) {
+    const pc = canvasEl.getContext('2d');
+    pc.clearRect(0, 0, 44, 44);
+    pc.save();
+    pc.scale(44 / S, 44 / S);
+    drawFn(pc);
+    pc.restore();
+  }
+
+  function renderPreviews() {
+    // Erase = grass
+    renderPreview(document.getElementById('preview-erase'), (pc) => {
+      const img = IMGS['grass'];
+      if (img && img.complete && img.naturalWidth > 0) {
+        pc.drawImage(img, 64, 64, 64, 64, 0, 0, S, S);
+      } else {
+        pc.fillStyle = '#5a8a3a';
+        pc.fillRect(0, 0, S, S);
+      }
+    });
+
+    renderPreview(document.getElementById('preview-river'), (pc) => {
+      // Show cross shape: connects all 4 sides
+      const img = IMGS['grass'];
+      if (img && img.complete && img.naturalWidth > 0) {
+        pc.drawImage(img, 64, 64, 64, 64, 0, 0, S, S);
+      } else { pc.fillStyle = '#5a8a3a'; pc.fillRect(0, 0, S, S); }
+      const hw = Math.round(S * 0.30), cx = Math.floor(S/2), cy = Math.floor(S/2);
+      pc.fillStyle = '#1a4fa0';
+      pc.fillRect(cx - hw, 0,       hw*2, S); // vertical
+      pc.fillRect(0,       cy - hw, S,    hw*2); // horizontal
+      pc.fillStyle = '#2266cc';
+      pc.fillRect(cx - hw + 2, 0, (hw-2)*2, S);
+      pc.fillRect(0, cy - hw + 2, S, (hw-2)*2);
+      pc.fillStyle = '#5599ee';
+      pc.fillRect(cx - 1, 0, 2, S);
+      pc.fillRect(0, cy - 1, S, 2);
+    });
+
+    renderPreview(document.getElementById('preview-bridge'), (pc) => {
+      // Show NS bridge (most common — over horizontal river)
+      pc.fillStyle = '#1a4fa0'; pc.fillRect(0, 0, S, S);
+      const bx = Math.floor(S*0.15), bw = Math.floor(S*0.7);
+      pc.fillStyle = '#8b5e18'; pc.fillRect(bx, 0, bw, S);
+      pc.fillStyle = '#a67020'; pc.fillRect(bx+2, 0, bw-4, S);
+      pc.fillStyle = '#5a3a08';
+      for (let p = 1; p < 4; p++) pc.fillRect(bx, Math.floor(S/4*p), bw, 2);
+      pc.fillStyle = '#3a2005';
+      pc.fillRect(bx, 0, 3, S);
+      pc.fillRect(bx+bw-3, 0, 3, S);
+    });
+
+    renderPreview(document.getElementById('preview-mountain'), (pc) => {
+      const img = IMGS['grass'];
+      if (img && img.complete && img.naturalWidth > 0) {
+        pc.drawImage(img, 64, 64, 64, 64, 0, 0, S, S);
+      } else {
+        pc.fillStyle = '#5a8a3a'; pc.fillRect(0, 0, S, S);
+      }
+      const mcx = Math.floor(S / 2);
+      pc.fillStyle = '#f2f6ff'; pc.fillRect(mcx-1, 0, 2, 2);
+      pc.fillStyle = '#ccdaf0'; pc.fillRect(mcx-4, 4, 8, 2);
+      pc.fillStyle = '#807888'; pc.fillRect(mcx-7, 8, 14, 2);
+      pc.fillStyle = '#483e54'; pc.fillRect(mcx-12, 16, 24, 2);
+      pc.fillStyle = '#241a30'; pc.fillRect(mcx-14, 24, 28, 6);
+    });
+
+    // River turns
+    ['river_nw','river_ne','river_sw','river_se'].forEach(type => {
+      const cfg = RIVER_TURN_CFG[type];
+      renderPreview(document.getElementById('preview-' + type), (pc) => {
+        // Grass background
+        const img = IMGS['grass'];
+        if (img && img.complete && img.naturalWidth > 0) {
+          pc.drawImage(img, 64, 64, 64, 64, 0, 0, S, S);
+        } else {
+          pc.fillStyle = '#5a8a3a'; pc.fillRect(0, 0, S, S);
+        }
+        const cx = cfg.ccx * S, cy = cfg.ccy * S;
+        const { a1, a2 } = cfg;
+        const iR = S * 0.2, oR = S * 0.8;
+        // Water band
+        pc.beginPath();
+        pc.arc(cx, cy, oR, a1, a2, false);
+        pc.arc(cx, cy, iR, a2, a1, true);
+        pc.closePath();
+        pc.fillStyle = '#1a4fa0'; pc.fill();
+        // Lighter centre
+        pc.beginPath();
+        pc.arc(cx, cy, oR - (oR-iR)*0.17, a1, a2, false);
+        pc.arc(cx, cy, iR + (oR-iR)*0.17, a2, a1, true);
+        pc.closePath();
+        pc.fillStyle = '#2266cc'; pc.fill();
+        // Highlight
+        pc.beginPath();
+        pc.arc(cx, cy, (iR+oR)/2 + 1, a1, a2, false);
+        pc.strokeStyle = '#5599ee'; pc.lineWidth = 2; pc.stroke();
+      });
+    });
+
+    // Buildings: draw scaled-down
+    const castleBlueImg = IMGS['castle_blue'];
+    const pCB = document.getElementById('preview-castle_blue').getContext('2d');
+    pCB.clearRect(0, 0, 44, 44);
+    if (castleBlueImg && castleBlueImg.complete && castleBlueImg.naturalWidth > 0) {
+      pCB.drawImage(castleBlueImg, 0, 0, 44, 44);
+    } else {
+      pCB.fillStyle = 'rgba(70,130,220,0.7)'; pCB.fillRect(0,0,44,44);
+    }
+
+    const castleRedImg = IMGS['castle_red'];
+    const pCR = document.getElementById('preview-castle_red').getContext('2d');
+    pCR.clearRect(0, 0, 44, 44);
+    if (castleRedImg && castleRedImg.complete && castleRedImg.naturalWidth > 0) {
+      pCR.drawImage(castleRedImg, 0, 0, 44, 44);
+    } else {
+      pCR.fillStyle = 'rgba(220,70,70,0.7)'; pCR.fillRect(0,0,44,44);
+    }
+
+    const towerImg = IMGS['tower'];
+    const pT = document.getElementById('preview-tower').getContext('2d');
+    pT.clearRect(0, 0, 44, 44);
+    if (towerImg && towerImg.complete && towerImg.naturalWidth > 0) {
+      pT.drawImage(towerImg, 0, 0, 44, 44);
+    } else {
+      pT.fillStyle = '#513c6f'; pT.fillRect(0,0,44,44);
+    }
+
+    const ruinsImg = IMGS['ruins'];
+    const pR = document.getElementById('preview-ruins').getContext('2d');
+    pR.clearRect(0, 0, 44, 44);
+    const gc = pR.createRadialGradient(22, 25, 4, 22, 25, 22);
+    gc.addColorStop(0, '#9fd56e'); gc.addColorStop(1, '#4d7038');
+    pR.fillStyle = gc; pR.fillRect(0, 0, 44, 44);
+    if (ruinsImg && ruinsImg.complete && ruinsImg.naturalWidth > 0) {
+      pR.drawImage(ruinsImg, 170, 170, 700, 620, 2, 2, 40, 40);
+    }
+  }
+
+  renderPreviews();
+
+  // ── Painting logic ─────────────────────────────────────────────
+  function cellFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top)  * scaleY;
+    const col = Math.floor(x / S);
+    const row = Math.floor(y / S);
+    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return null;
+    return { row, col };
+  }
+
+  function applyTool(row, col, mode) {
+    if (mode === 'erase' || activeTool === 'erase') {
+      // Erase terrain
+      terrain[row][col] = '';
+      // Erase any building whose root is this cell
+      const b = buildingAt(row, col);
+      if (b) removeBuilding(b);
+
+    } else if (isTerrain(activeTool)) {
+      // Remove any building at this cell first
+      const b = buildingAt(row, col);
+      if (b) removeBuilding(b);
+      terrain[row][col] = activeTool;
+
+    } else if (isBuilding(activeTool)) {
+      const sz = BUILDING_SIZE[activeTool];
+      // Check bounds
+      if (row + sz.h > ROWS || col + sz.w > COLS) return;
+      // Remove any buildings overlapping footprint
+      for (let dr = 0; dr < sz.h; dr++) {
+        for (let dc = 0; dc < sz.w; dc++) {
+          const ob = buildingAt(row + dr, col + dc);
+          if (ob) removeBuilding(ob);
+          terrain[row + dr][col + dc] = ''; // clear terrain under building
+        }
+      }
+      buildings.push({ type: activeTool, row, col });
+    }
+
+    render();
+    updateStats();
+    updateJson();
+    saveToLocal();
+  }
+
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  canvas.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const cell = cellFromEvent(e);
+    if (!cell) return;
+    const mode = e.button === 2 ? 'erase' : 'draw';
+    painting = true;
+    paintMode = mode;
+    snapshot();
+    applyTool(cell.row, cell.col, mode);
+    canvas.setPointerCapture(e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', e => {
+    const cell = cellFromEvent(e);
+    if (cell) {
+      const bld = buildingAt(cell.row, cell.col);
+      document.getElementById('cursorInfo').textContent =
+        `Строка ${cell.row}, Столбец ${cell.col}\n` +
+        (terrain[cell.row][cell.col] ? `Тип: ${terrain[cell.row][cell.col]}` :
+         bld ? `Здание: ${bld.type}` : 'Трава');
+    }
+    if (!painting) return;
+    if (!cell) return;
+    // Don't repeat buildings on drag (only terrain + erase)
+    if (isBuilding(activeTool) && paintMode === 'draw') return;
+    applyTool(cell.row, cell.col, paintMode);
+  });
+
+  canvas.addEventListener('pointerup', () => { painting = false; });
+
+  // ── Palette selection ──────────────────────────────────────────
+  document.querySelectorAll('.tile-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tile-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeTool = btn.dataset.type;
+    });
+  });
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+    // Hotkeys: 1=erase, 2=river, 3=bridge, 4=mountain,
+    //          q=river_nw, w=river_ne, a=river_sw, s=river_se
+    //          5=castle_blue, 6=castle_red, 7=tower, 8=ruins
+    const keys = {
+      '1':'erase','2':'river','3':'bridge','4':'mountain',
+      'q':'river_nw','w':'river_ne','a':'river_sw','s':'river_se',
+      '5':'castle_blue','6':'castle_red','7':'tower','8':'ruins',
+    };
+    if (keys[e.key] && !e.ctrlKey && !e.metaKey) {
+      document.querySelectorAll('.tile-btn').forEach(b => b.classList.remove('active'));
+      const btn = document.querySelector(`[data-type="${keys[e.key]}"]`);
+      if (btn) btn.classList.add('active');
+      activeTool = keys[e.key];
+    }
+  });
+
+  // ── Stats & JSON ───────────────────────────────────────────────
+  function updateStats() {
+    let river = 0, bridge = 0, mountain = 0;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const t = terrain[r][c];
+      if (t === 'river' || t in RIVER_TURN_CFG) river++;
+      else if (t === 'bridge') bridge++;
+      else if (t === 'mountain') mountain++;
+    }
+    const castles = buildings.filter(b => b.type.startsWith('castle')).length;
+    const towers  = buildings.filter(b => b.type === 'tower').length;
+    const ruins   = buildings.filter(b => b.type === 'ruins').length;
+    document.getElementById('stat-river').textContent = river;
+    document.getElementById('stat-bridge').textContent = bridge;
+    document.getElementById('stat-mountain').textContent = mountain;
+    document.getElementById('stat-castle').textContent = castles;
+    document.getElementById('stat-tower').textContent = towers;
+    document.getElementById('stat-ruins').textContent = ruins;
+  }
+
+  function buildJson() {
+    const terrainList = [];
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const t = terrain[r][c];
+      if (t) terrainList.push({ row: r, col: c, type: t });
+    }
+
+    const castleBlue = buildings.find(b => b.type === 'castle_blue');
+    const castleRed  = buildings.find(b => b.type === 'castle_red');
+    const towers     = buildings.filter(b => b.type === 'tower').map(b => ({ row: b.row, col: b.col }));
+    const ruinsList  = buildings.filter(b => b.type === 'ruins').map(b => ({ left: b.col, top: b.row, width: 2, height: 2 }));
+
+    return {
+      terrain: terrainList,
+      castleP1: castleBlue ? { row: castleBlue.row, col: castleBlue.col } : null,
+      castleP2: castleRed  ? { row: castleRed.row,  col: castleRed.col  } : null,
+      towers,
+      ruins: ruinsList[0] || null,
+    };
+  }
+
+  // ── localStorage autosave ─────────────────────────────────────
+  const LS_KEY = 'kc_map_editor_v1';
+
+  function saveToLocal() {
+    try {
+      const raw = {
+        terrain: terrain.map(r => r.slice()),
+        buildings: buildings.map(b => ({...b})),
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(raw));
+    } catch(e) {}
+  }
+
+  function loadFromLocal() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_KEY));
+      if (!raw) return false;
+      if (Array.isArray(raw.terrain) && raw.terrain.length === ROWS) {
+        for (let r = 0; r < ROWS; r++) terrain[r] = raw.terrain[r].slice();
+      }
+      buildings.length = 0;
+      if (Array.isArray(raw.buildings)) raw.buildings.forEach(b => buildings.push({...b}));
+      return true;
+    } catch(e) { return false; }
+  }
+
+  function updateJson() {
+    const data = buildJson();
+    const txt = JSON.stringify(data, null, 2);
+    const preview = txt.length > 300 ? txt.slice(0, 300) + '\n…' : txt;
+    document.getElementById('jsonOutput').textContent = preview;
+  }
+
+  // Restore from localStorage on load
+  loadFromLocal();
+  updateStats();
+  updateJson();
+
+  // ── Save ───────────────────────────────────────────────────────
+  document.getElementById('btnSave').addEventListener('click', () => {
+    const data = buildJson();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'map_' + Date.now() + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // ── Load ───────────────────────────────────────────────────────
+  document.getElementById('btnLoad').addEventListener('click', () => {
+    document.getElementById('fileInput').click();
+  });
+
+  document.getElementById('fileInput').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        snapshot();
+        // Clear
+        for (let r = 0; r < ROWS; r++) terrain[r].fill('');
+        buildings.length = 0;
+        // Apply terrain
+        if (Array.isArray(data.terrain)) {
+          data.terrain.forEach(t => {
+            if (t.row >= 0 && t.row < ROWS && t.col >= 0 && t.col < COLS) {
+              terrain[t.row][t.col] = t.type || '';
+            }
+          });
+        }
+        // Apply buildings
+        if (data.castleP1) buildings.push({ type: 'castle_blue', row: data.castleP1.row, col: data.castleP1.col });
+        if (data.castleP2) buildings.push({ type: 'castle_red',  row: data.castleP2.row, col: data.castleP2.col });
+        if (Array.isArray(data.towers)) {
+          data.towers.forEach(t => buildings.push({ type: 'tower', row: t.row, col: t.col }));
+        }
+        if (data.ruins) buildings.push({ type: 'ruins', row: data.ruins.top, col: data.ruins.left });
+        render();
+        updateStats();
+        updateJson();
+        saveToLocal();
+      } catch (err) {
+        alert('Ошибка чтения JSON: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  // ── Clear ──────────────────────────────────────────────────────
+  document.getElementById('btnClear').addEventListener('click', () => {
+    if (!confirm('Очистить карту?')) return;
+    snapshot();
+    for (let r = 0; r < ROWS; r++) terrain[r].fill('');
+    buildings.length = 0;
+    render();
+    updateStats();
+    updateJson();
+    saveToLocal();
+  });
+
+  // Initial render
+  render();
+
+})();
+</script>
+</body>
+</html>

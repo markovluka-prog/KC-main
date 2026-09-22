@@ -1,0 +1,256 @@
+# ============================================================
+# === AI ПРЕСЕТЫ — ПОШАГОВАЯ СТРАТЕГИЯ ===
+# ============================================================
+# Градация: 7 уровней вместо 5
+# Новые параметры для пошаговой стратегии:
+#   positioningWeight  — приоритет позиционирования юнитов
+#   flanking           — использование фланговых атак
+#   resourceControl    — контроль ресурсных точек
+#   defensiveFormation — умение уходить в оборону
+#   unitSynergy        — координация между юнитами
+#   trapSetting        — расстановка ловушек/засад
+#   adaptiveDifficulty — подстройка под стиль игрока
+
+[AI: Новичок]
+frameWait=35
+randomMoveChance=0.50
+mistakeChance=0.35
+skipChance=0.20
+threatBlindness=0.70
+spellReluctance=0.90
+scoreNoise=5000
+useMinimax=false
+minimaxDepth=0
+focusFireWeight=0.0
+comboDetection=false
+territoryWeight=0.10
+sacrificeEval=false
+aggressionBias=0.10
+retreatAwareness=false
+positioningWeight=0.0
+flanking=false
+resourceControl=0.0
+defensiveFormation=false
+unitSynergy=false
+trapSetting=false
+adaptiveDifficulty=false
+# Ходит почти случайно, не понимает угроз, игнорирует позицию
+
+[AI: Ученик]
+frameWait=28
+randomMoveChance=0.28
+mistakeChance=0.20
+skipChance=0.10
+threatBlindness=0.40
+spellReluctance=0.70
+scoreNoise=2800
+useMinimax=false
+minimaxDepth=0
+focusFireWeight=0.15
+comboDetection=false
+territoryWeight=0.30
+sacrificeEval=false
+aggressionBias=0.20
+retreatAwareness=false
+positioningWeight=0.15
+flanking=false
+resourceControl=0.10
+defensiveFormation=false
+unitSynergy=false
+trapSetting=false
+adaptiveDifficulty=false
+# Пытается атаковать, но легко читается и не защищается
+
+[AI: Боец]
+frameWait=22
+randomMoveChance=0.14
+mistakeChance=0.12
+skipChance=0.05
+threatBlindness=0.22
+spellReluctance=0.48
+scoreNoise=1400
+useMinimax=false
+minimaxDepth=0
+focusFireWeight=0.35
+comboDetection=false
+territoryWeight=0.50
+sacrificeEval=false
+aggressionBias=0.40
+retreatAwareness=true
+positioningWeight=0.35
+flanking=false
+resourceControl=0.25
+defensiveFormation=false
+unitSynergy=false
+trapSetting=false
+adaptiveDifficulty=false
+# Давит числом, держит позиции, но не координирует юниты
+
+[AI: Воин]
+frameWait=17
+randomMoveChance=0.07
+mistakeChance=0.07
+skipChance=0.01
+threatBlindness=0.10
+spellReluctance=0.22
+scoreNoise=600
+useMinimax=false
+minimaxDepth=0
+focusFireWeight=0.55
+comboDetection=true
+territoryWeight=0.70
+sacrificeEval=false
+aggressionBias=0.60
+retreatAwareness=true
+positioningWeight=0.60
+flanking=true
+resourceControl=0.50
+defensiveFormation=true
+unitSynergy=false
+trapSetting=false
+adaptiveDifficulty=false
+# Понимает фланги, контролирует карту, умеет обороняться
+
+[AI: Тактик]
+frameWait=13
+randomMoveChance=0.02
+mistakeChance=0.02
+skipChance=0.00
+threatBlindness=0.04
+spellReluctance=0.10
+scoreNoise=250
+useMinimax=true
+minimaxDepth=2
+focusFireWeight=0.78
+comboDetection=true
+territoryWeight=0.88
+sacrificeEval=false
+aggressionBias=0.72
+retreatAwareness=true
+positioningWeight=0.80
+flanking=true
+resourceControl=0.75
+defensiveFormation=true
+unitSynergy=true
+trapSetting=false
+adaptiveDifficulty=false
+# Координирует юниты, планирует на 2 хода вперёд, ловит ошибки
+
+[AI: Мастер]
+frameWait=9
+randomMoveChance=0.00
+mistakeChance=0.00
+skipChance=0.00
+threatBlindness=0.00
+spellReluctance=0.00
+scoreNoise=0
+useMinimax=true
+minimaxDepth=3
+focusFireWeight=1.0
+comboDetection=true
+territoryWeight=1.0
+sacrificeEval=true
+aggressionBias=0.90
+retreatAwareness=true
+positioningWeight=1.0
+flanking=true
+resourceControl=1.0
+defensiveFormation=true
+unitSynergy=true
+trapSetting=true
+adaptiveDifficulty=false
+# Расставляет ловушки, жертвует юнитами ради позиции, не прощает ошибок
+
+[AI: Легенда]
+frameWait=6
+randomMoveChance=0.00
+mistakeChance=0.00
+skipChance=0.00
+threatBlindness=0.00
+spellReluctance=0.00
+scoreNoise=0
+useMinimax=true
+minimaxDepth=4
+focusFireWeight=1.0
+comboDetection=true
+territoryWeight=1.0
+sacrificeEval=true
+aggressionBias=1.0
+retreatAwareness=true
+positioningWeight=1.0
+flanking=true
+resourceControl=1.0
+defensiveFormation=true
+unitSynergy=true
+trapSetting=true
+adaptiveDifficulty=true
+# Финальный босс. Подстраивается под игрока. Используется только 1 раз.
+
+
+# ============================================================
+# === ИСТОРИЯ ===
+# ============================================================
+# Формат:
+#   # Глава N — Название
+#   ## Название подглавы
+#   ПресетАИ | Название задания
+# ============================================================
+
+# ——————————————————————————————
+# Глава 1 — Меч в камне
+# Тема: знакомство с механиками. Враги слабые, ошибки прощаются.
+# ——————————————————————————————
+
+## Юность Артура
+Новичок | Безвестный оруженосец
+Новичок | Турнир в Лондоне
+Ученик  | Меч в камне
+
+## Корона Логрии
+Ученик  | Непокорные бароны
+Ученик  | Клятва верности
+Боец    | Битва при Бедегрейне
+
+## Эскалибур
+Боец    | Владычица Озера
+Воин    | Дар Эскалибура
+
+
+# ——————————————————————————————
+# Глава 2 — Рыцари Круглого стола
+# Тема: контроль территории, бои на открытой карте.
+# Пик главы — первый бой с Тактиком.
+# ——————————————————————————————
+
+## Камелот
+Боец    | Основание Камелота
+Воин    | Круглый стол
+Воин    | Сэр Ланселот
+
+## Войны с саксами
+Воин    | Саксонское вторжение
+Тактик  | Гора Бадон
+Тактик  | Двенадцать битв
+
+## Честь рыцаря
+Тактик  | Гавейн и Зелёный рыцарь
+Мастер  | Турнир чемпионов
+
+
+# ——————————————————————————————
+# Глава 3 — Закат Камелота
+# Тема: поиск Грааля и предательство. Сложность сначала снижается
+# (эмоциональная передышка), затем резко растёт.
+# ——————————————————————————————
+
+## Поиски Грааля
+Воин    | Священный Грааль
+Тактик  | Сэр Галахад
+Тактик  | Тень измены
+Мастер  | Предательство Ланселота
+
+## Битва при Камлане
+Ученик  | Мордред восстаёт          # ← намеренное снижение: король ослаблен
+Боец    | Осада Камелота
+Воин    | Последний поход
+Тактик  | Король былого и грядущего

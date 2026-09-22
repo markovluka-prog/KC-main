@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": false,
+    // Same module setup as the rest of the workspace; we emit .js + .d.ts
+    // so Cloud Run can `import` from dist/ instead of stripping TS at
+    // runtime (Node 22 refuses to strip types inside node_modules).
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/__tests__/**"]
+}

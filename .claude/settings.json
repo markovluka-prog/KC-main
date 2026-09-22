@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:8080/)",
+      "Bash(curl -s -X POST http://localhost:8080/api/lobby/create -H \"Content-Type: application/json\" -H \"Authorization: Bearer test\" -d '{\"displayName\":\"test\"}')",
+      "Bash(grep -v \"^$\")",
+      "Bash(curl -s http://localhost:8080/healthz)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(npm run *)",
+      "Bash(echo \"Vite PID=$!\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://kc.agatha-mistery.com/)"
+    ]
+  }
+}

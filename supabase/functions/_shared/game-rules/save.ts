@@ -1,0 +1,507 @@
+// AUTO-VENDORED from packages/game-rules/src/save.ts — DO NOT EDIT BY HAND.
+// Edit the source and re-run scripts/vendor-game-rules.sh.
+import {
+  ARTIFACTS,
+  COLS,
+  DEFAULT_RUINS,
+  DEFAULT_TOWERS,
+  SAVE_VERSION,
+  UNIT_TYPES,
+} from './constants.ts';
+import { insideBoard } from './board.ts';
+import type {
+  ArtifactName,
+  DroppedItem,
+  GameMode,
+  GearSlot,
+  Player,
+  RuinsArea,
+  TowerPosition,
+  UnitTypeKey,
+} from './types.ts';
+
+/**
+ * Plain JSON-serialisable snapshot of an in-progress match.
+ *
+ * Phase 1 — FUNC-001 fix: now includes AI difficulty, current story task,
+ * map theme, faction selection and session score so AI/story matches are
+ * resumable after reload (legacy snapshot only worked for PvP).
+ */
+export interface GameSnapshot {
+  version: number;
+  screen: 'menu' | 'game';
+  mode: GameMode;
+  currentPlayer: Player;
+  activatedCount: number;
+  turnNumber: number;
+  winner: Player | null;
+  message: string;
+  lastEvent: string;
+  player1Bottom: boolean;
+  castleP1Col: number;
+  castleP2Col: number;
+  /**
+   * Phase 1.5 S6: snapshot v3 includes towers and ruins inline so a server
+   * can reconstruct a GameState from a snapshot without touching world.ts
+   * module state. v2 snapshots fall back to DEFAULT_TOWERS / DEFAULT_RUINS.
+   */
+  towers: TowerPosition[];
+  ruins: RuinsArea;
+  ruins2: RuinsArea;
+  terrain: { row: number; col: number; type: string }[];
+  shieldTurns: Record<Player, number>;
+  damageBuff: Record<Player, number>;
+  pendingWeaponEquip: SerializedWeaponEquip | null;
+  /** Gear lying on the board after its bearer died (drop/pickup feature). */
+  droppedItems: DroppedItem[];
+  previewUnitId: number | null;
+  selectedUnitId: number | null;
+  inventory: Record<Player, Record<ArtifactName, number>>;
+  units: SerializedUnit[];
+
+  // FUNC-001 fix — AI / story restoration fields.
+  aiDifficulty: string | null;
+  currentStoryTask: SerializedStoryTask | null;
+  mapTheme: 'land' | 'sea';
+  p1Faction: string;
+  p2Faction: string;
+  sessionWins: Record<Player, number>;
+}
+
+export interface SerializedWeaponEquip {
+  name: string;
+  amount: number;
+  icon: string;
+  allowedTypes: UnitTypeKey[] | null;
+  forbidTypes: UnitTypeKey[] | null;
+  archerOnly: boolean;
+  /** Slot the pending item equips into. Absent ⇒ 'weapon' (back-compat). */
+  slot?: GearSlot;
+}
+
+export interface SerializedUnit {
+  id: number;
+  player: Player;
+  type: UnitTypeKey;
+  row: number;
+  col: number;
+  maxHp: number;
+  hp: number;
+  startArmor: number;
+  armor: number;
+  maxArmor: number;
+  damage: number;
+  maxMoves: number;
+  movesLeft: number;
+  done: boolean;
+  activated: boolean;
+  visualRow: number | null;
+  visualCol: number | null;
+  dying: boolean;
+  deathProgress: number;
+  weapon: { name: string; icon: string; amount: number } | null;
+  /** Equipped armour piece (drop/pickup + restoration accounting). */
+  armorGear: { name: string; icon: string; amount: number } | null;
+}
+
+export interface SerializedStoryTask {
+  ci: number;
+  gi: number;
+  ti: number;
+}
+
+/**
+ * Tampering ceiling for a unit's damage when restoring from localStorage.
+ * Maximum allowed = base damage for the unit type + this cap.
+ *
+ * T25 (P1) — defends against a player editing localStorage to inflate damage,
+ * which is otherwise possible because the save is fully client-controlled.
+ * Real anti-cheat lands in Phase 4 (server-authoritative state).
+ */
+export const DESERIALIZED_DAMAGE_BUFF_CAP = 10;
+
+function toPlayer(value: unknown): Player {
+  return value === 2 ? 2 : 1;
+}
+
+function toFiniteInt(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.floor(n);
+}
+
+function toBool(value: unknown): boolean {
+  return !!value;
+}
+
+function toString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+const UNIT_TYPE_KEYS = new Set<UnitTypeKey>([
+  'knight',
+  'cavalry',
+  'archer',
+  'catapult',
+  'crossbow',
+  'samurai',
+]);
+
+function isUnitType(value: unknown): value is UnitTypeKey {
+  return typeof value === 'string' && UNIT_TYPE_KEYS.has(value as UnitTypeKey);
+}
+
+function isGameMode(value: unknown): value is GameMode {
+  return value === 'pvp' || value === 'ai' || value === 'story';
+}
+
+function normaliseUnitTypes(value: unknown): UnitTypeKey[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: UnitTypeKey[] = [];
+  for (const v of value) {
+    if (isUnitType(v)) out.push(v);
+  }
+  return out;
+}
+
+export function validateSerializedUnit(raw: unknown): SerializedUnit | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (!isUnitType(r.type)) return null;
+
+  const id = toFiniteInt(r.id, -1);
+  if (id <= 0) return null;
+  const row = toFiniteInt(r.row, -1);
+  const col = toFiniteInt(r.col, -1);
+  if (!insideBoard(row, col)) return null;
+
+  const player = toPlayer(r.player);
+  const baseDamage = UNIT_TYPES[r.type].damage;
+  const damageCeiling = baseDamage + DESERIALIZED_DAMAGE_BUFF_CAP;
+
+  const maxHp = Math.max(1, toFiniteInt(r.maxHp, UNIT_TYPES[r.type].hp));
+  const hp = Math.max(0, Math.min(maxHp, toFiniteInt(r.hp, maxHp)));
+  const startArmor = Math.max(0, toFiniteInt(r.startArmor, UNIT_TYPES[r.type].armor));
+  const maxArmor = Math.max(0, Math.min(startArmor, toFiniteInt(r.maxArmor, startArmor)));
+  const armor = Math.max(0, Math.min(maxArmor, toFiniteInt(r.armor, maxArmor)));
+  // T25 P1: cap damage to prevent localStorage tampering.
+  const damage = Math.max(0, Math.min(damageCeiling, toFiniteInt(r.damage, baseDamage)));
+  const maxMoves = Math.max(1, toFiniteInt(r.maxMoves, UNIT_TYPES[r.type].moves));
+  const movesLeft = Math.max(0, Math.min(maxMoves, toFiniteInt(r.movesLeft, maxMoves)));
+
+  let weapon: SerializedUnit['weapon'] = null;
+  if (r.weapon && typeof r.weapon === 'object') {
+    const w = r.weapon as Record<string, unknown>;
+    weapon = {
+      name: toString(w.name),
+      icon: toString(w.icon),
+      amount: Math.max(0, toFiniteInt(w.amount, 0)),
+    };
+  }
+
+  let armorGear: SerializedUnit['armorGear'] = null;
+  if (r.armorGear && typeof r.armorGear === 'object') {
+    const a = r.armorGear as Record<string, unknown>;
+    armorGear = {
+      name: toString(a.name),
+      icon: toString(a.icon),
+      amount: Math.max(0, toFiniteInt(a.amount, 0)),
+    };
+  }
+
+  return {
+    id,
+    player,
+    type: r.type,
+    row,
+    col,
+    maxHp,
+    hp,
+    startArmor,
+    armor,
+    maxArmor,
+    damage,
+    maxMoves,
+    movesLeft,
+    done: toBool(r.done),
+    activated: toBool(r.activated),
+    // null/undefined must stay null — Number(null) === 0 is finite, which would
+    // otherwise pin a unit's visual position to cell (0,0). The server sends
+    // visualRow/Col: null (visual position is a client-only render concern), so
+    // a naive Number() check made every online unit render stacked at top-left.
+    visualRow:
+      r.visualRow == null || !Number.isFinite(Number(r.visualRow)) ? null : Number(r.visualRow),
+    visualCol:
+      r.visualCol == null || !Number.isFinite(Number(r.visualCol)) ? null : Number(r.visualCol),
+    dying: toBool(r.dying),
+    deathProgress: Math.max(0, toFiniteInt(r.deathProgress, 0)),
+    weapon,
+    armorGear,
+  };
+}
+
+function validatePendingWeaponEquip(raw: unknown): SerializedWeaponEquip | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.name !== 'string') return null;
+  const amount = Number(r.amount);
+  if (!Number.isFinite(amount)) return null;
+  return {
+    name: r.name,
+    amount: Math.max(0, amount),
+    icon: toString(r.icon),
+    allowedTypes: normaliseUnitTypes(r.allowedTypes),
+    forbidTypes: normaliseUnitTypes(r.forbidTypes),
+    archerOnly: toBool(r.archerOnly),
+    slot: r.slot === 'armor' ? 'armor' : 'weapon',
+  };
+}
+
+function validateDroppedItems(raw: unknown): DroppedItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DroppedItem[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.name !== 'string') continue;
+    const row = toFiniteInt(r.row, -1);
+    const col = toFiniteInt(r.col, -1);
+    if (!insideBoard(row, col)) continue;
+    out.push({
+      row,
+      col,
+      slot: r.slot === 'armor' ? 'armor' : 'weapon',
+      name: r.name,
+      amount: Math.max(0, toFiniteInt(r.amount, 0)),
+      icon: toString(r.icon),
+      allowedTypes: normaliseUnitTypes(r.allowedTypes),
+      forbidTypes: normaliseUnitTypes(r.forbidTypes),
+      archerOnly: toBool(r.archerOnly),
+    });
+  }
+  return out;
+}
+
+function validateStoryTask(raw: unknown): SerializedStoryTask | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const ci = toFiniteInt(r.ci, -1);
+  const gi = toFiniteInt(r.gi, -1);
+  const ti = toFiniteInt(r.ti, -1);
+  if (ci < 0 || gi < 0 || ti < 0) return null;
+  return { ci, gi, ti };
+}
+
+function emptyInventory(): Record<ArtifactName, number> {
+  const inv = {} as Record<ArtifactName, number>;
+  for (const a of ARTIFACTS) inv[a] = 0;
+  return inv;
+}
+
+function validateInventory(raw: unknown): Record<ArtifactName, number> {
+  const inv = emptyInventory();
+  if (!raw || typeof raw !== 'object') return inv;
+  const r = raw as Record<string, unknown>;
+  for (const a of ARTIFACTS) {
+    const n = Number(r[a]);
+    if (Number.isFinite(n) && n >= 0) inv[a] = Math.floor(n);
+  }
+  return inv;
+}
+
+function validateTowers(raw: unknown): TowerPosition[] {
+  if (!Array.isArray(raw)) return DEFAULT_TOWERS.map((t) => ({ ...t }));
+  const out: TowerPosition[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== 'object') continue;
+    const r = t as Record<string, unknown>;
+    const row = toFiniteInt(r.row, -1);
+    const col = toFiniteInt(r.col, -1);
+    if (row >= 0 && col >= 0) out.push({ row, col });
+  }
+  return out.length > 0 ? out : DEFAULT_TOWERS.map((t) => ({ ...t }));
+}
+
+function validateRuins(raw: unknown): RuinsArea {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_RUINS };
+  const r = raw as Record<string, unknown>;
+  const top = toFiniteInt(r.top, DEFAULT_RUINS.top);
+  const left = toFiniteInt(r.left, DEFAULT_RUINS.left);
+  const width = Math.max(0, toFiniteInt(r.width, DEFAULT_RUINS.width));
+  const height = Math.max(0, toFiniteInt(r.height, DEFAULT_RUINS.height));
+  if (width === 0 || height === 0) return { ...DEFAULT_RUINS };
+  return { top, left, width, height };
+}
+
+/** Second ruins area — may legitimately be absent (zero-size). */
+function validateRuins2(raw: unknown): RuinsArea {
+  const empty: RuinsArea = { top: 0, left: 0, width: 0, height: 0 };
+  if (!raw || typeof raw !== 'object') return empty;
+  const r = raw as Record<string, unknown>;
+  const width = Math.max(0, toFiniteInt(r.width, 0));
+  const height = Math.max(0, toFiniteInt(r.height, 0));
+  if (width === 0 || height === 0) return empty;
+  return { top: toFiniteInt(r.top, 0), left: toFiniteInt(r.left, 0), width, height };
+}
+
+function validateTerrain(raw: unknown): { row: number; col: number; type: string }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (t) =>
+        t &&
+        typeof t === 'object' &&
+        typeof t.row === 'number' &&
+        typeof t.col === 'number' &&
+        typeof t.type === 'string',
+    )
+    .map((t) => ({ row: t.row as number, col: t.col as number, type: t.type as string }));
+}
+
+/**
+ * Type-guard / sanitiser for a snapshot pulled from localStorage. Returns
+ * `null` if the structure or version cannot be trusted.
+ *
+ * Accepts the current `SAVE_VERSION` AND the immediately-previous `v2` — for
+ * v2 we fill in `towers` / `ruins` from defaults so an in-progress match
+ * survives the upgrade. (Phase 1.5 S6.)
+ */
+const SUPPORTED_VERSIONS = new Set([SAVE_VERSION, SAVE_VERSION - 1]);
+
+export function validateSnapshot(raw: unknown): GameSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.version !== 'number' || !SUPPORTED_VERSIONS.has(r.version)) return null;
+
+  const screen: 'menu' | 'game' = r.screen === 'game' ? 'game' : 'menu';
+  // FUNC-001 fix — no longer restricting restore to PvP only.
+  const mode: GameMode | null = isGameMode(r.mode) ? r.mode : null;
+  if (screen === 'game' && !mode) return null;
+
+  const unitsRaw = Array.isArray(r.units) ? r.units : [];
+  const units: SerializedUnit[] = [];
+  const occupied = new Set<string>();
+  for (const u of unitsRaw) {
+    const v = validateSerializedUnit(u);
+    if (!v) continue;
+    const key = v.row + ',' + v.col;
+    if (occupied.has(key)) continue;
+    occupied.add(key);
+    units.push(v);
+  }
+  if (screen === 'game' && units.length === 0) return null;
+
+  const shield = (r.shieldTurns as Record<string, unknown>) ?? {};
+  const buff = (r.damageBuff as Record<string, unknown>) ?? {};
+  const sessionRaw = (r.sessionWins as Record<string, unknown>) ?? {};
+  const inventoryRaw = (r.inventory as Record<string, unknown>) ?? {};
+
+  return {
+    version: SAVE_VERSION,
+    screen,
+    mode: mode ?? 'pvp',
+    currentPlayer: toPlayer(r.currentPlayer),
+    activatedCount: Math.max(0, toFiniteInt(r.activatedCount, 0)),
+    turnNumber: Math.max(1, toFiniteInt(r.turnNumber, 1)),
+    winner: r.winner === 1 || r.winner === 2 ? (r.winner as Player) : null,
+    message: toString(r.message),
+    lastEvent: toString(r.lastEvent),
+    player1Bottom: r.player1Bottom === true,
+    castleP1Col: Math.max(0, Math.min(COLS - 4, toFiniteInt(r.castleP1Col, 0))),
+    castleP2Col: Math.max(0, Math.min(COLS - 4, toFiniteInt(r.castleP2Col, 0))),
+    towers: validateTowers(r.towers),
+    ruins: validateRuins(r.ruins),
+    ruins2: validateRuins2(r.ruins2),
+    terrain: validateTerrain(r.terrain),
+    shieldTurns: {
+      1: Math.max(0, toFiniteInt(shield[1], 0)),
+      2: Math.max(0, toFiniteInt(shield[2], 0)),
+    },
+    damageBuff: {
+      1: Math.max(0, toFiniteInt(buff[1], 0)),
+      2: Math.max(0, toFiniteInt(buff[2], 0)),
+    },
+    pendingWeaponEquip: validatePendingWeaponEquip(r.pendingWeaponEquip),
+    droppedItems: validateDroppedItems(r.droppedItems),
+    previewUnitId: Number.isFinite(Number(r.previewUnitId)) ? Number(r.previewUnitId) : null,
+    selectedUnitId: Number.isFinite(Number(r.selectedUnitId)) ? Number(r.selectedUnitId) : null,
+    inventory: {
+      1: validateInventory((inventoryRaw as Record<string, unknown>)[1]),
+      2: validateInventory((inventoryRaw as Record<string, unknown>)[2]),
+    },
+    units,
+
+    // FUNC-001 fix: AI/story state.
+    aiDifficulty: typeof r.aiDifficulty === 'string' ? r.aiDifficulty : null,
+    currentStoryTask: validateStoryTask(r.currentStoryTask),
+    mapTheme: r.mapTheme === 'sea' ? 'sea' : 'land',
+    p1Faction: typeof r.p1Faction === 'string' ? r.p1Faction : 'blue',
+    p2Faction: typeof r.p2Faction === 'string' ? r.p2Faction : 'red',
+    sessionWins: {
+      1: Math.max(0, toFiniteInt(sessionRaw[1], 0)),
+      2: Math.max(0, toFiniteInt(sessionRaw[2], 0)),
+    },
+  };
+}
+
+/**
+ * Phase 1.5 S6 adapter: lifts a fully-validated GameSnapshot into the
+ * server-side GameState shape. Save metadata (story task, factions, UI
+ * selection) is NOT carried over — the server doesn't need it.
+ */
+export function snapshotToState(snapshot: GameSnapshot): {
+  castleP1Col: number;
+  castleP2Col: number;
+  towers: TowerPosition[];
+  ruins: RuinsArea;
+  ruins2: RuinsArea;
+  currentPlayer: Player;
+  turnNumber: number;
+  activatedCount: number;
+  winner: Player | null;
+  mode: GameMode;
+  shieldTurns: Record<Player, number>;
+  damageBuff: Record<Player, number>;
+  inventory: Record<Player, Record<ArtifactName, number>>;
+  units: SerializedUnit[];
+  droppedItems: DroppedItem[];
+} {
+  return {
+    castleP1Col: snapshot.castleP1Col,
+    castleP2Col: snapshot.castleP2Col,
+    towers: snapshot.towers.map((t) => ({ ...t })),
+    ruins: { ...snapshot.ruins },
+    ruins2: { ...snapshot.ruins2 },
+    currentPlayer: snapshot.currentPlayer,
+    turnNumber: snapshot.turnNumber,
+    activatedCount: snapshot.activatedCount,
+    winner: snapshot.winner,
+    mode: snapshot.mode,
+    shieldTurns: { ...snapshot.shieldTurns },
+    damageBuff: { ...snapshot.damageBuff },
+    inventory: {
+      1: { ...snapshot.inventory[1] },
+      2: { ...snapshot.inventory[2] },
+    },
+    units: snapshot.units.map((u) => ({
+      ...u,
+      weapon: u.weapon ? { ...u.weapon } : null,
+      armorGear: u.armorGear ? { ...u.armorGear } : null,
+    })),
+    droppedItems: snapshot.droppedItems.map((d) => ({ ...d })),
+  };
+}
+
+/**
+ * Returns true if the given snapshot is a partial match we can resume in
+ * the menu. FUNC-001 fix: previously this was restricted to `mode === 'pvp'`
+ * which orphaned every AI/story save.
+ */
+export function isContinuableSnapshot(snapshot: GameSnapshot | null): boolean {
+  return !!(
+    snapshot &&
+    snapshot.screen === 'game' &&
+    snapshot.winner === null &&
+    snapshot.units.length > 0
+  );
+}

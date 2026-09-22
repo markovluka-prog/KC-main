@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Map Preview — 200 карт</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  background: #12121e;
+  color: #eee;
+  font-family: sans-serif;
+  padding: 16px;
+  margin: 0;
+}
+h1 { margin: 0 0 8px; font-size: 20px; }
+#stats {
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #aaa;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+#stats span { font-weight: bold; }
+#stats .approved-c { color: #4caf50; }
+#stats .rejected-c { color: #f44336; }
+#btn-export, #btn-auto {
+  padding: 5px 14px;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: bold;
+}
+#btn-export { background: #2a5aaa; }
+#btn-export:hover { background: #3a6fd8; }
+#btn-export:disabled { background: #333; color: #666; cursor: default; }
+#btn-auto { background: #5a3aaa; }
+#btn-auto:hover { background: #7a4adc; }
+#grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.map-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: #1e1e30;
+  border-radius: 6px;
+  padding: 6px;
+  border: 2px solid #333;
+  transition: border-color 0.12s;
+}
+.map-card.approved { border-color: #4caf50; background: #1a2a1a; }
+.map-card.rejected { border-color: #f44336; background: #2a1a1a; }
+.map-card canvas {
+  display: block;
+  image-rendering: pixelated;
+  cursor: pointer;
+}
+.map-card .map-num {
+  font-size: 10px;
+  color: #777;
+  width: 100%;
+  text-align: left;
+  padding-left: 2px;
+}
+.map-card .btns {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+.map-card button {
+  flex: 1;
+  padding: 3px 0;
+  font-size: 11px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-weight: bold;
+}
+.btn-approve { background: #2d6e2d; color: #8ddc8d; }
+.btn-approve:hover { background: #3a8f3a; }
+.map-card.approved .btn-approve { background: #4caf50; color: #fff; }
+.btn-reject { background: #6e2d2d; color: #dc8d8d; }
+.btn-reject:hover { background: #8f3a3a; }
+.map-card.rejected .btn-reject { background: #f44336; color: #fff; }
+</style>
+</head>
+<body>
+<h1>Map Preview — 200 карт</h1>
+<div id="stats">
+  Одобрено: <span class="approved-c" id="approvedCount">0</span>
+  &nbsp;Отклонено: <span class="rejected-c" id="rejectedCount">0</span>
+  &nbsp;Нейтральных: <span id="neutralCount">200</span>
+  <button id="btn-auto" onclick="autoSelect()">⚡ Авто-выбор топ 100</button>
+  <button id="btn-export" disabled onclick="exportApproved()">⬇ Скачать одобренные</button>
+</div>
+<div id="grid"></div>
+
+<script>
+// ── Константы (зеркало из game-rules) ────────────────────────────────────────
+const ROWS = 20, COLS = 20;
+const CS = 8; // px на клетку в превью
+
+// ── Сидированный RNG (mulberry32) ────────────────────────────────────────────
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s += 0x6D2B79F5;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const C = {
+  grass:    '#5c9e3c',
+  river:    '#2a80cc',
+  bridge:   '#8b5e18',
+  island:   '#7ab840',
+  mountain: '#5a5570',
+  ruins:    '#c8a84a',
+  castle1:  '#2255bb',
+  castle2:  '#bb2222',
+  tower:    '#6a3aaa',
+};
+
+// ── Генерация карты (точная копия логики из main.ts) ─────────────────────────
+function generateMap(seed) {
+  const rng = makeRng(seed);
+
+  const maxCastleCol = COLS - 4;
+  const sharedCastleCol = Math.floor(rng() * (maxCastleCol + 1));
+  const castleP1Col = sharedCastleCol;
+  const castleP2Col = sharedCastleCol;
+
+  const overlapsCastle = (left, width, col) =>
+    left < col + 4 && left + width > col;
+
+  let ruinsCol, att = 0;
+  do {
+    ruinsCol = Math.floor(rng() * (COLS - 1));
+    att++;
+  } while (att < 50 && (overlapsCastle(ruinsCol, 2, castleP1Col) || overlapsCastle(ruinsCol, 2, castleP2Col)));
+
+  const ruins = { top: 8 + Math.floor(rng() * 3), left: ruinsCol, width: 2, height: 2 };
+
+  const towerCols = [];
+  for (let i = 0; i < COLS; i++) {
+    if (!overlapsCastle(i, 1, castleP1Col) && !overlapsCastle(i, 1, castleP2Col))
+      towerCols.push(i);
+  }
+  towerCols.sort(() => rng() - 0.5);
+  const mid = Math.floor(COLS / 2);
+  const tc = [towerCols[0] ?? 2, towerCols[1] ?? mid - 1, towerCols[2] ?? mid + 1, towerCols[3] ?? COLS - 3];
+  const towers = [
+    { row: 5, col: tc[0] }, { row: 5, col: tc[1] },
+    { row: 14, col: tc[2] }, { row: 14, col: tc[3] },
+  ];
+
+  const terrain = [];
+
+  // Река
+  let baseRow = 8 + Math.floor(rng() * 4);
+  for (let g = 0; g < 20; g++) {
+    let clash = false;
+    for (let r = ruins.top; r < ruins.top + ruins.height; r++)
+      if (r === baseRow) { clash = true; break; }
+    if (!clash) break;
+    baseRow = 8 + Math.floor(rng() * 4);
+  }
+
+  const riverPath = [];
+  let curRow = baseRow;
+  const bendCols = new Set();
+  for (let c = 0; c < COLS; c++) {
+    riverPath.push(curRow);
+    if (c >= 2 && c <= COLS - 3 && c % (3 + Math.floor(rng() * 2)) === 0) {
+      const shift = rng() < 0.5 ? 1 : -1;
+      const next = curRow + shift;
+      if (next >= 5 && next <= 14) {
+        curRow = next;
+        bendCols.add(c);
+      }
+    }
+  }
+
+  // Фикс: река не проходит сквозь руины
+  for (let c = 0; c < COLS; c++) {
+    if (c >= ruins.left && c < ruins.left + ruins.width) {
+      if (riverPath[c] >= ruins.top && riverPath[c] < ruins.top + ruins.height) {
+        riverPath[c] = ruins.top - 1;
+      }
+    }
+  }
+
+  // Мосты
+  const zones = rng() < 0.3 ? 3 : 2;
+  const zoneW = Math.floor(COLS / zones);
+  const bridgeCols = new Set();
+  for (let z = 0; z < zones; z++) {
+    const lo = z * zoneW + 1;
+    const hi = Math.min((z + 1) * zoneW - 2, COLS - 2);
+    bridgeCols.add(lo + Math.floor(rng() * Math.max(1, hi - lo)));
+  }
+
+  const riverSet = new Map();
+  for (let c = 0; c < COLS; c++) {
+    const r = riverPath[c];
+    riverSet.set(r + ',' + c, bridgeCols.has(c) ? 'bridge' : 'river');
+    if (bendCols.has(c) && c > 0) {
+      const prevRow = riverPath[c - 1];
+      if (prevRow !== r) {
+        const ck = prevRow + ',' + c;
+        if (!riverSet.has(ck)) riverSet.set(ck, 'river');
+      }
+    }
+  }
+  // Убираем угловые клетки из руин
+  for (let rr = ruins.top; rr < ruins.top + ruins.height; rr++)
+    for (let cc = ruins.left; cc < ruins.left + ruins.width; cc++)
+      riverSet.delete(rr + ',' + cc);
+
+  for (const [key, type] of riverSet) {
+    const [r, c] = key.split(',').map(Number);
+    terrain.push({ row: r, col: c, type });
+  }
+
+  // Blocked set
+  const blocked = new Set(riverSet.keys());
+  for (let c2 = castleP1Col; c2 < castleP1Col + 4; c2++)
+    for (let r2 = 0; r2 < 5; r2++) blocked.add(r2 + ',' + c2);
+  for (let c2 = castleP2Col; c2 < castleP2Col + 4; c2++)
+    for (let r2 = ROWS - 5; r2 < ROWS; r2++) blocked.add(r2 + ',' + c2);
+  for (let r2 = ruins.top; r2 < ruins.top + ruins.height; r2++)
+    for (let c2 = ruins.left; c2 < ruins.left + ruins.width; c2++)
+      blocked.add(r2 + ',' + c2);
+  for (const t of towers) blocked.add(t.row + ',' + t.col);
+
+  const clearCols = new Set();
+  for (const bc of bridgeCols)
+    for (let dc = -2; dc <= 2; dc++) clearCols.add(bc + dc);
+
+  // Горы
+  const shapes = [
+    [[0,0],[1,0],[2,0]], [[0,0],[0,1],[0,2]],
+    [[0,0],[1,0],[1,1]], [[0,0],[-1,0],[0,1]],
+    [[0,0],[1,0],[0,1],[1,1]], [[0,0],[1,0]],
+  ];
+  const placeCluster = (cr, cc) => {
+    const shape = shapes[Math.floor(rng() * shapes.length)];
+    for (const [dr, dc] of shape) {
+      const mr = cr + dr, mc = cc + dc;
+      if (mr < 3 || mr >= ROWS - 3 || mc < 0 || mc >= COLS) continue;
+      const key = mr + ',' + mc;
+      if (blocked.has(key) || clearCols.has(mc)) continue;
+      blocked.add(key);
+      terrain.push({ row: mr, col: mc, type: 'mountain' });
+    }
+  };
+
+  const numFlank = 2 + Math.floor(rng() * 2);
+  for (let i = 0; i < numFlank; i++) {
+    let cr = 0, cc = 0, ok = false;
+    for (let a = 0; a < 40 && !ok; a++) {
+      cr = 4 + Math.floor(rng() * (ROWS - 8));
+      cc = 1 + Math.floor(rng() * (COLS / 2 - 3));
+      ok = !blocked.has(cr + ',' + cc) && !clearCols.has(cc);
+    }
+    if (!ok) continue;
+    placeCluster(cr, cc);
+    placeCluster(cr, COLS - 1 - cc);
+  }
+
+  if (rng() < 0.4) {
+    let cr = 0, cc = 0, ok = false;
+    for (let a = 0; a < 30 && !ok; a++) {
+      cr = 5 + Math.floor(rng() * (ROWS - 10));
+      cc = Math.floor(COLS / 2) - 1 + Math.floor(rng() * 3);
+      ok = !blocked.has(cr + ',' + cc) && !clearCols.has(cc);
+    }
+    if (ok) placeCluster(cr, cc);
+  }
+
+  // Острова
+  if (rng() < 0.5) {
+    const islandCount = 1 + Math.floor(rng() * 2);
+    const islandCols = [];
+    for (let a = 0; a < 40 && islandCols.length < islandCount; a++) {
+      const ic = 2 + Math.floor(rng() * (COLS - 4));
+      let tooClose = false;
+      for (const bc of bridgeCols)
+        if (Math.abs(ic - bc) < 3) { tooClose = true; break; }
+      for (const prev of islandCols)
+        if (Math.abs(ic - prev) < 4) { tooClose = true; break; }
+      if (tooClose) continue;
+      const ir = riverPath[ic];
+      const key = ir + ',' + ic;
+      if (riverSet.has(key) && riverSet.get(key) !== 'bridge') {
+        riverSet.set(key, 'island');
+        const idx = terrain.findIndex(t => t.row === ir && t.col === ic);
+        if (idx >= 0) terrain[idx] = { row: ir, col: ic, type: 'island' };
+        islandCols.push(ic);
+      }
+    }
+  }
+
+  return { terrain, ruins, castleP1Col, castleP2Col, towers, riverPath };
+}
+
+// ── Рендер миникарты ──────────────────────────────────────────────────────────
+function renderMap(canvas, mapData) {
+  const { terrain, ruins, castleP1Col, castleP2Col, towers } = mapData;
+  const ctx = canvas.getContext('2d');
+  const S = CS;
+
+  // Трава
+  ctx.fillStyle = C.grass;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Замки
+  ctx.fillStyle = C.castle1;
+  ctx.fillRect(castleP1Col * S, 0, 4 * S, 5 * S);
+  ctx.fillStyle = C.castle2;
+  ctx.fillRect(castleP2Col * S, (ROWS - 5) * S, 4 * S, 5 * S);
+
+  // Руины
+  ctx.fillStyle = C.ruins;
+  ctx.fillRect(ruins.left * S, ruins.top * S, ruins.width * S, ruins.height * S);
+
+  // Башни
+  for (const t of towers) {
+    ctx.fillStyle = C.tower;
+    ctx.fillRect(t.col * S, t.row * S, S, S);
+  }
+
+  // Terrain
+  for (const t of terrain) {
+    ctx.fillStyle = C[t.type] || C.grass;
+    ctx.fillRect(t.col * S, t.row * S, S, S);
+  }
+
+  // Тонкая сетка
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 0.5;
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath(); ctx.moveTo(0, r * S); ctx.lineTo(COLS * S, r * S); ctx.stroke();
+  }
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath(); ctx.moveTo(c * S, 0); ctx.lineTo(c * S, ROWS * S); ctx.stroke();
+  }
+}
+
+// ── Оценка карты ─────────────────────────────────────────────────────────────
+function scoreMap(mapData) {
+  let score = 0;
+  const { terrain, ruins, towers, riverPath } = mapData;
+
+  const mSet = new Set();
+  const islands = [], bridges = [], riverCells = [];
+  for (const t of terrain) {
+    if (t.type === 'mountain') mSet.add(t.row + ',' + t.col);
+    if (t.type === 'island')   islands.push(t);
+    if (t.type === 'bridge')   bridges.push(t);
+    if (t.type === 'river' || t.type === 'bridge') riverCells.push(t);
+  }
+
+  // Острова в реке — стратегические позиции
+  score += islands.length * 45;
+
+  // Ущелья: горы в одной колонке с промежутком 2-3 ряда (коридор между ними)
+  for (const [key] of [...mSet].map(k => [k])) {
+    const [r, c] = key.split(',').map(Number);
+    if (mSet.has((r + 2) + ',' + c)) score += 30; // вертикальный коридор
+    if (mSet.has((r + 3) + ',' + c)) score += 18;
+    if (mSet.has(r + ',' + (c + 2))) score += 15; // горизонтальный коридор
+  }
+
+  // Горы у мостов — создают ущелье у переправы
+  for (const b of bridges) {
+    let near = 0;
+    for (const t of terrain) {
+      if (t.type === 'mountain' && Math.abs(t.col - b.col) <= 2 && Math.abs(t.row - b.row) <= 4)
+        near++;
+    }
+    score += near * 12;
+  }
+
+  // Руины рядом с рекой — интересный стратегический объект
+  const riverRowCols = new Set(riverCells.map(r => r.row + ',' + r.col));
+  let ruinsNearRiver = false;
+  outer: for (let dr = -1; dr <= ruins.height; dr++) {
+    for (let dc = -1; dc <= ruins.width; dc++) {
+      if (riverRowCols.has((ruins.top + dr) + ',' + (ruins.left + dc))) {
+        ruinsNearRiver = true; break outer;
+      }
+    }
+  }
+  if (ruinsNearRiver) score += 35;
+
+  // Руины у гор
+  for (const [key] of [...mSet].map(k => [k])) {
+    const [r, c] = key.split(',').map(Number);
+    if (r >= ruins.top - 2 && r <= ruins.top + ruins.height + 1 &&
+        c >= ruins.left - 2 && c <= ruins.left + ruins.width + 1) {
+      score += 8;
+    }
+  }
+
+  // Башни у мостов — обстрел переправы
+  for (const t of towers) {
+    for (const b of bridges) {
+      const d = Math.abs(t.row - b.row) + Math.abs(t.col - b.col);
+      if (d <= 4) score += 25;
+    }
+    // Башни у гор — защищённая позиция
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
+      if (mSet.has((t.row + dr) + ',' + (t.col + dc))) score += 10;
+    }
+  }
+
+  // Извилистость реки (много рядов = красивые изгибы)
+  const usedRows = new Set(riverPath);
+  score += (usedRows.size - 1) * 7;
+
+  // Разнообразие гор (больше уникальных колонок = карта богаче)
+  const mCols = new Set([...mSet].map(k => k.split(',')[1]));
+  score += Math.min(mCols.size, 14) * 3;
+
+  return score;
+}
+
+// ── Собираем страницу ─────────────────────────────────────────────────────────
+const states = new Array(200).fill('neutral');
+const seeds = Array.from({ length: 200 }, () => (Math.random() * 0xFFFFFFFF) >>> 0);
+const allMaps = [];
+const cards = [];
+const grid = document.getElementById('grid');
+
+function setCardState(i, state) {
+  states[i] = state;
+  cards[i].className = 'map-card' + (state !== 'neutral' ? ' ' + state : '');
+}
+
+function updateStats() {
+  const approved = states.filter(s => s === 'approved').length;
+  const rejected = states.filter(s => s === 'rejected').length;
+  document.getElementById('approvedCount').textContent = approved;
+  document.getElementById('rejectedCount').textContent = rejected;
+  document.getElementById('neutralCount').textContent = 200 - approved - rejected;
+  document.getElementById('btn-export').disabled = approved === 0;
+}
+
+function autoSelect() {
+  const scored = allMaps.map((m, i) => ({ i, score: scoreMap(m) }));
+  scored.sort((a, b) => b.score - a.score);
+  for (let i = 0; i < 200; i++) {
+    setCardState(scored[i].i, i < 100 ? 'approved' : 'neutral');
+  }
+  // Прокрутить к первой карте
+  cards[scored[0].i].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  updateStats();
+}
+
+function exportApproved() {
+  const approved = states
+    .map((s, i) => s === 'approved' ? { mapIndex: i + 1, seed: seeds[i] } : null)
+    .filter(Boolean);
+  const json = JSON.stringify({ approved }, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'approved-maps.json';
+  a.click();
+}
+
+for (let i = 0; i < 200; i++) {
+  const mapData = generateMap(seeds[i]);
+  allMaps.push(mapData);
+
+  const card = document.createElement('div');
+  card.className = 'map-card';
+  cards.push(card);
+
+  const num = document.createElement('div');
+  num.className = 'map-num';
+  const sc = scoreMap(mapData);
+  num.textContent = '#' + (i + 1) + '  ★' + sc;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = COLS * CS;
+  canvas.height = ROWS * CS;
+  canvas.style.width = (COLS * CS) + 'px';
+  canvas.style.height = (ROWS * CS) + 'px';
+  renderMap(canvas, mapData);
+
+  const btns = document.createElement('div');
+  btns.className = 'btns';
+
+  const btnA = document.createElement('button');
+  btnA.className = 'btn-approve';
+  btnA.textContent = '✓';
+  btnA.title = 'Одобрить';
+  btnA.onclick = () => { setCardState(i, states[i] === 'approved' ? 'neutral' : 'approved'); updateStats(); };
+
+  const btnR = document.createElement('button');
+  btnR.className = 'btn-reject';
+  btnR.textContent = '✗';
+  btnR.title = 'Отклонить';
+  btnR.onclick = () => { setCardState(i, states[i] === 'rejected' ? 'neutral' : 'rejected'); updateStats(); };
+
+  btns.appendChild(btnA);
+  btns.appendChild(btnR);
+  card.appendChild(num);
+  card.appendChild(canvas);
+  card.appendChild(btns);
+  grid.appendChild(card);
+}
+
+// Авто-выбор сразу при загрузке
+autoSelect();
+
+updateStats();
+</script>
+
+<!-- Легенда -->
+<div style="margin-top:16px; font-size:11px; color:#666; display:flex; gap:12px; flex-wrap:wrap;">
+  <span><span style="color:#2255bb">■</span> Замок P1</span>
+  <span><span style="color:#bb2222">■</span> Замок P2</span>
+  <span><span style="color:#2a80cc">■</span> Река</span>
+  <span><span style="color:#8b5e18">■</span> Мост</span>
+  <span><span style="color:#7ab840">■</span> Остров</span>
+  <span><span style="color:#5a5570">■</span> Горы</span>
+  <span><span style="color:#c8a84a">■</span> Руины</span>
+  <span><span style="color:#6a3aaa">■</span> Башня</span>
+</div>
+</body>
+</html>

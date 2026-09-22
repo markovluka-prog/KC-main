@@ -1,0 +1,20 @@
+{
+  "name": "Рыцари и Замки",
+  "short_name": "K&C",
+  "description": "Пошаговая тактическая браузерная игра",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#1a1410",
+  "theme_color": "#2b1e16",
+  "lang": "ru-RU",
+  "icons": [
+    {
+      "src": "/assets/custom/logo.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,152 @@
+{
+    "$comment": [
+        "Evaluation weights for evaluateLightState() in ai.ts.",
+        "",
+        "SCALE: one average unit on the board is worth ~10000 ('unit.presence' plus",
+        "its type/stat terms). Every other term is expressed as a fraction of that,",
+        "so a positional bonus can never silently outweigh losing a piece. Before",
+        "this file the numbers were inline literals on no common scale: a 3 hp",
+        "difference (3000) outscored perfect archer spacing (1500) by 2x for no",
+        "stated reason.",
+        "",
+        "ARMOR IS A CONSUMABLE SHIELD, not a damage reducer. combat.ts",
+        "applyDamageToTarget zeroes armor the moment damage exceeds it, so a point",
+        "of armor absorbs damage roughly once. That is why armor is priced well",
+        "below hp here (the old code had armor at half of hp, far too high).",
+        "",
+        "HP IS TINY (units have 2-5 hp) and damage is large (3-7). Almost every",
+        "connecting attack is lethal or near-lethal, so threat/hanging terms matter",
+        "more than in a game with big hp pools -- but they must stay below the",
+        "value of the unit itself or the bot refuses to trade at all."
+    ],
+    "version": 2,
+    "material": {
+        "$comment": "Core piece value. presence is the flat 'a unit exists' term that dominates every positional consideration.",
+        "presence": 6000,
+        "perHp": 1000,
+        "perArmor": 250,
+        "perDamage": 300,
+        "byType": {
+            "cavalry": 2500,
+            "knight": 1200,
+            "samurai": 1000,
+            "crossbow": 1000,
+            "archer": 900,
+            "catapult": 900
+        },
+        "onTower": 3000,
+        "wipeout": 100000
+    },
+    "castle": {
+        "$comment": "Castle capture is the real win condition; these dwarf material on purpose.",
+        "captureUndefended": 300000,
+        "captureDefended": 40000,
+        "lossUndefended": 300000,
+        "lossDefended": 40000,
+        "raidThreatRadius": 8,
+        "raidThreatPerCell": 7000,
+        "approachPerCell": 60
+    },
+    "focus": {
+        "$comment": "Bonus for enemies already wounded, so damage concentrates instead of spreading.",
+        "woundedEnemyMax": 8000
+    },
+    "retreat": {
+        "$comment": "When outnumbered, pull back toward home. Scales with the size of the deficit.",
+        "outnumberedHomePerCell": 200,
+        "outnumberedHomeRadius": 8,
+        "lowHpThreshold": 0.35,
+        "lowHpDistBonusPerCell": 600,
+        "lowHpDistBonusMax": 3000
+    },
+    "spacing": {
+        "$comment": "Per-unit-type ideal distance to the nearest enemy. Ranged kite, melee close.",
+        "rangedAdjacentPenalty": 5000,
+        "rangedOptimalBonus": 1500,
+        "rangedNearBonus": 500,
+        "catapultTooCloseWithinPenalty": 6000,
+        "catapultOptimalBonus": 1200,
+        "meleeCloseBonus": 800,
+        "meleeNearBonus": 300
+    },
+    "threat": {
+        "$comment": [
+            "Threat used to be counted three times over (opponentThreatWeight, the",
+            "hanging-piece pass, and indirectly via spacing), with one of the three",
+            "uncapped. These are the single source of truth now; hangingMax caps the",
+            "total so a threatened unit is never worth more than losing it outright."
+        ],
+        "perDamagePoint": 600,
+        "victimValueFraction": 0.1,
+        "hangingBase": 4000,
+        "hangingValueFraction": 0.3,
+        "hangingMax": 12000,
+        "heavilyThreatenedRatio": 0.6,
+        "heavilyThreatenedPenalty": 2500
+    },
+    "cohesion": {
+        "$comment": "Penalty per unit with no friendly unit within `radius`.",
+        "isolatedPenalty": 600,
+        "radius": 3
+    },
+    "economy": {
+        "$comment": [
+            "NEW in v2. evaluateLightState previously had no inventory term at all,",
+            "so MCTS saw 'draw' (search ruins) as an action costing the unit's whole",
+            "activation for zero evaluated gain, and crafting as pure loss. The whole",
+            "economy layer was effectively off, most visibly on `hard` where",
+            "trustSearch keeps the search plan verbatim.",
+            "",
+            "Artifacts are priced by rarity from RUINS_LOOT_TABLE weights (5/3/3/2/2",
+            "out of 100) and by how many recipes need them. Values stay modest: an",
+            "artifact is a fraction of a unit, because holding one wins nothing by",
+            "itself -- it has to be spent."
+        ],
+        "artifactBase": 900,
+        "artifactByName": {
+            "Трава С.": 800,
+            "Посох огня": 1100,
+            "Волшебная палочка": 1200,
+            "Солнечные часы": 1400,
+            "Вода серебряных трав": 1300
+        },
+        "$comment_recipe": "Extra credit once a full recipe is affordable -- a complete set is worth far more than the sum of its parts, since that is the point at which it converts into stats.",
+        "completeRecipeBonus": 2500,
+        "$comment_ruins": "Pull toward the ruins so units actually go farm when nothing better is happening. Deliberately small: it must never outweigh a capture or a kill.",
+        "ruinsControlBonus": 1200,
+        "ruinsApproachPerCell": 120,
+        "ruinsApproachRadius": 6,
+        "$comment_gear": "Equipped gear is already reflected in unit damage/armor, so this only prices the standing option value of unspent kit.",
+        "unequippedWeaponValue": 2000,
+        "unequippedArmorValue": 1500
+    },
+    "buffs": {
+        "$comment": "Active spell effects on the light state (shieldTurns / damageBuff).",
+        "shieldPerTurn": 1800,
+        "damageBuffPerTurn": 2200
+    },
+    "rollout": {
+        "$comment": [
+            "Rollout policy shaping. The greedy playout assumes BOTH sides always take",
+            "the locally best action, which models a human badly -- humans set up",
+            "trades and sacrifices that a greedy simulation never predicts, so any",
+            "line depending on the opponent's reply is mis-evaluated.",
+            "",
+            "opponentNoiseChance makes the simulated opponent occasionally take its",
+            "2nd/3rd-best action instead, widening the distribution of replies the",
+            "search prices in. 0 restores the fully-greedy behaviour.",
+            "",
+            "MEASURED, and the theory LOST: on the 'beats a greedy opponent' game test",
+            "noise 0 wins 3/3, noise 0.25 wins 2/3, noise 0.10 wins 1/3. Same lesson as",
+            "the RAVE experiment -- a standard MCTS improvement that does not survive",
+            "contact with this game. The mechanism is that the light-state rollout is",
+            "already a coarse approximation, so extra variance on top of it degrades",
+            "the value estimate faster than it buys robustness to non-greedy replies.",
+            "Kept implemented but OFF; raise it only alongside a fresh measurement."
+        ],
+        "opponentNoiseChance": 0,
+        "opponentNoiseTopK": 3,
+        "terminalDiscount": 0.97,
+        "staticEvalScale": 60000
+    }
+}
