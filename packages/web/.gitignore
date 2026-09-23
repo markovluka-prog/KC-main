@@ -1,3 +1,10 @@
 # Generated self-play data (guided-MCTS plan, Phase 0+). Large, regeneratable,
 # not meant to be committed.
 selfplay-data/
+
+# Neural-net self-play datasets and trained checkpoints (see scripts/
+# nn-selfplay.ts, scripts/nn-train.py). Large, regeneratable, not meant to be
+# committed — the exported nn-weights.json a training run produces is the one
+# exception: copy a checkpoint you want to SHIP into src/game/nn-weights.json
+# explicitly (that path is NOT ignored).
+scripts/nn-data/

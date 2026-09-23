@@ -128,6 +128,21 @@ export interface AIConfig {
   // detectCombos/comboIsProfitable/buildComboPlan/isSafePositionIgnoring) is
   // plan step 8, not this one.
   useBeamSearch?: BeamDifficulty;
+  // ---- Learned policy/value network (AlphaZero-style self-play), see
+  // nn-eval.ts / nn-features.ts. When true AND an AIPlayer has had
+  // setNNEvaluator() called with a loaded net, mctsRollout uses the net's
+  // value head as the leaf evaluation instead of a greedy playout +
+  // evaluateLightState, and computePlanStarters blends in the net's policy
+  // head when ranking candidate first-actions. Off by default: an AIPlayer
+  // with this true but no evaluator injected silently behaves exactly like
+  // before (the existing heuristic path runs unchanged), so flipping it on
+  // for a preset is safe even before a net has been trained.
+  useNeuralNet?: boolean;
+  // 0 = trust the net's value head completely at the leaf (pure AlphaZero).
+  // >0 blends in evaluateLightState's static eval too, weighted by this
+  // fraction — a hedge for early training, when the net is weaker than the
+  // hand-tuned eval it's meant to replace. Ignored when useNeuralNet is false.
+  neuralNetBlend?: number;
 }
 
 // ---- Strategy planning: computeStrategy() in ai.ts uses a GOAP planner

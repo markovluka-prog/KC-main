@@ -48,6 +48,8 @@ import {
   type ForceRatioBucket,
   type WorldState,
 } from './goap.js';
+import { NNEvaluator, softmax } from './nn-eval.js';
+import type { BoardOrientation } from './nn-features.js';
 
 /**
  * Evaluation weights, loaded from ai-weights.json.
@@ -467,12 +469,29 @@ export class AIPlayer {
     solved: boolean;
   } | null = null;
 
+  // ── Learned policy/value network (see ai-config.ts's useNeuralNet) ─────────
+  // Null until setNNEvaluator() is called with a loaded net. Every read site
+  // checks both config.useNeuralNet AND this being non-null, so a preset that
+  // opts in before a net exists (or before this AIPlayer's owner bothers
+  // loading one) just falls through to the original heuristic path untouched.
+  private nnEvaluator: NNEvaluator | null = null;
+
   constructor(game: AIGameAPI, player: Player, difficulty: AIDifficulty = 'medium') {
     this.game = game;
     this.player = player;
     this.difficulty = difficulty;
     this.config = AI_DIFFICULTY[difficulty] ?? AI_DIFFICULTY.medium;
     this.frameWait = this.config.frameWait;
+  }
+
+  /** Inject (or clear, with null) a loaded policy/value network. Has no effect
+   *  unless config.useNeuralNet is also true — see that field's doc comment. */
+  setNNEvaluator(evaluator: NNEvaluator | null): void {
+    this.nnEvaluator = evaluator;
+  }
+
+  private get nnActive(): boolean {
+    return Boolean(this.config.useNeuralNet && this.nnEvaluator);
   }
 
   /** THE intelligence dial (config.intelligence, default 1). Everything the
@@ -5514,8 +5533,64 @@ export class AIPlayer {
         if (a.type !== 'skip') starters.push({ unitId: u.id, action: a, score: a.score ?? 0 });
       });
     });
+    if (this.nnActive) this.applyNNPolicyPrior(state, player, starters);
     starters.sort((a, b) => b.score - a.score);
     return starters;
+  }
+
+  /** Fixed-width feature vector for ONE candidate (unit, action) pair, read by
+   *  the policy head (see nn-eval.ts's policyLogit). Kept tiny and hand-picked
+   *  rather than trying to describe the action exhaustively — the trunk's
+   *  hidden state already carries the full board, so this only needs to say
+   *  "which of the position's many options is this one". */
+  private static readonly POLICY_ACTION_FEATURE_WIDTH = 8;
+  private encodeActionFeatures(state: LightState, unit: LightUnit, action: AIAction): number[] {
+    const isAttack = action.type === 'attack' ? 1 : 0;
+    const isMove = action.type === 'move' ? 1 : 0;
+    const isOther = isAttack || isMove ? 0 : 1;
+    const target =
+      action.type === 'attack' && action.targetRow !== undefined && action.targetCol !== undefined
+        ? state.units.find((u) => u.row === action.targetRow && u.col === action.targetCol && u.hp > 0)
+        : null;
+    const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
+    const targetHpFrac = target ? clamp01(target.hp / Math.max(1, target.maxHp)) : 0;
+    // Same plain damage approximation used ad hoc throughout this file
+    // (e.g. line ~2982): attacker damage minus target armor, floored at 0.
+    // Good enough for a policy-ranking feature — the exact combat.ts formula
+    // (crits, shields, etc.) isn't needed just to say "this attack looks lethal".
+    const approxDamage = target ? Math.max(0, unit.damage - target.armor) : 0;
+    const lethal = target && approxDamage >= target.hp ? 1 : 0;
+    const destRow = action.row ?? unit.row;
+    const destCol = action.col ?? unit.col;
+    const moveDist = clamp01(Math.abs(destRow - unit.row) / 6 + Math.abs(destCol - unit.col) / 6);
+    const enemyCastleRow = this.enemyCastleRow(unit.player);
+    const advanceTowardCastle = clamp01(1 - Math.abs(destRow - enemyCastleRow) / 20);
+    return [isAttack, isMove, isOther, targetHpFrac, lethal, moveDist, advanceTowardCastle, unit.movesLeft / 4];
+  }
+
+  /** Blend the net's policy head into the heuristic starter scores: each
+   *  candidate's score is nudged by log(policy probability), so a strongly
+   *  preferred-by-the-net action is ranked earlier without the hand-tuned
+   *  heuristic being discarded outright (useful while the net is still weak
+   *  early in training — see neuralNetBlend for the analogous value-side
+   *  hedge). Scaled by W.rollout.staticEvalScale so the nudge sits on the same
+   *  order of magnitude as the heuristic scores it's adjusting. */
+  private applyNNPolicyPrior(state: LightState, player: Player, starters: PlanStarter[]): void {
+    if (starters.length === 0) return;
+    const evaluator = this.nnEvaluator!;
+    const orientation: BoardOrientation = { player1Bottom: this.game.player1Bottom };
+    const hidden = evaluator.evaluate(state, player, orientation).hidden;
+    const features = starters.map((s) => {
+      const unit = state.units.find((u) => u.id === s.unitId);
+      return unit ? this.encodeActionFeatures(state, unit, s.action) : new Array(AIPlayer.POLICY_ACTION_FEATURE_WIDTH).fill(0);
+    });
+    const logits = evaluator.policyLogitsFor(hidden, features);
+    const probs = softmax(logits);
+    const nudgeScale = W.rollout.staticEvalScale * 0.5;
+    starters.forEach((s, i) => {
+      const p = Math.max(1e-6, probs[i] ?? 1e-6);
+      s.score += Math.log(p) * nudgeScale;
+    });
   }
 
   private mctsRollout(
@@ -5533,6 +5608,41 @@ export class AIPlayer {
     // loss — sharpening the signal so extra rollouts actually discriminate.
     const reward = (win: boolean, d: number): number =>
       (win ? 1 : -1) * Math.pow(W.rollout.terminalDiscount, d);
+
+    // ── AlphaZero-style leaf evaluation ───────────────────────────────────
+    // When a trained net is active, skip the greedy multi-turn playout below
+    // entirely: the value head is trained (via self-play outcomes) to already
+    // encode what that playout used to approximate, in one forward pass instead
+    // of up to 16 simulated turns. Still check the immediate terminal
+    // conditions first — those are exact facts about `state`, not something a
+    // net trained on non-terminal positions should be asked to estimate.
+    if (this.nnActive) {
+      const myAliveNow = cur.units.filter((u) => u.player === ownPerspective && u.hp > 0).length;
+      const oppAliveNow = cur.units.filter((u) => u.player !== ownPerspective && u.hp > 0).length;
+      if (myAliveNow === 0) return reward(false, 0);
+      if (oppAliveNow === 0) return reward(true, 0);
+      const meInCastleNow = cur.units.some(
+        (u) => u.player === ownPerspective && u.hp > 0 && this.inCastleZone(u.row, u.col, opp),
+      );
+      const oppDefendsNow = cur.units.some(
+        (u) => u.player === opp && u.hp > 0 && this.inCastleZone(u.row, u.col, opp),
+      );
+      if (meInCastleNow && !oppDefendsNow) return reward(true, 0);
+      const oppInCastleNow = cur.units.some(
+        (u) => u.player === opp && u.hp > 0 && this.inCastleZone(u.row, u.col, ownPerspective),
+      );
+      const meDefendsNow = cur.units.some(
+        (u) => u.player === ownPerspective && u.hp > 0 && this.inCastleZone(u.row, u.col, ownPerspective),
+      );
+      if (oppInCastleNow && !meDefendsNow) return reward(false, 0);
+
+      const orientation: BoardOrientation = { player1Bottom: this.game.player1Bottom };
+      const netValue = this.nnEvaluator!.value(cur, ownPerspective, orientation);
+      const blend = this.config.neuralNetBlend ?? 0;
+      if (blend <= 0) return netValue;
+      const staticValue = Math.tanh(this.evaluateLightState(cur, ownPerspective) / W.rollout.staticEvalScale);
+      return netValue * (1 - blend) + staticValue * blend;
+    }
 
     // Rollout depth is taken from the config AS WRITTEN — it deliberately does
     // NOT scale with iq.
