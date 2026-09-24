@@ -155,7 +155,7 @@ export interface AIConfig {
 // applyStrategicOverlay at all, so no A/B number from it would have been
 // meaningful without separately fixing that harness gap first).
 
-export type AIDifficulty = 'easy' | 'medium' | 'hard';
+export type AIDifficulty = 'easy' | 'medium' | 'hard' | 'impossible';
 
 // DIFFICULTY PHILOSOPHY (reworked): strength = search depth + evaluation
 // quality, NOT random blunders. The old "handicap" knobs (randomMoveChance,
@@ -318,5 +318,69 @@ export const AI_DIFFICULTY: Record<AIDifficulty, AIConfig> = {
     // DEPTH — the bot resolves multi-turn tactics (trades, castle races) rather
     // than re-scoring a huge pile of shallow candidate plans.
     intelligence: 8,
+  },
+  // IMPOSSIBLE: same engine as HARD (MCTS + minimax + GOAP + beam search),
+  // pushed to the top of every dial. Not a new algorithm — HARD was already
+  // "effectively unbeatable" by design; this exists because a strong human
+  // still found lines through it. The `intelligence` dial (see ai.ts: iq(),
+  // scaleBudget, scaleSearch) is the engine author's own "max strength, time
+  // doesn't matter" lever: time/node budgets scale LINEARLY with it, depth/
+  // breadth scale with √it. At intelligence 60 that's ~7.7× HARD's linear
+  // budgets and ~2.7× its depth/breadth — several times deeper reads with a
+  // wider net, at the cost of several seconds more thinking per turn, which
+  // is the intended tradeoff for a difficulty tier that must not lose.
+  impossible: {
+    label: 'Невозможный',
+    // NOTE: createTurnPlan() tries useBeamSearch FIRST and, if it returns a
+    // plan, short-circuits before ever reaching MCTS/minimax below — so this
+    // must point at the strongest beam preset ('impossible' in beam-presets.ts,
+    // wider beam + deeper reply lookahead than 'expert'), not 'hard'. Pointing
+    // it at 'hard' here would silently waste every dial turned up below: the
+    // beam search would decide the turn before intelligence-scaled MCTS ever ran.
+    useBeamSearch: 'impossible',
+    frameWait: 10,
+    combinationLimit: 200,
+    randomMoveChance: 0,
+    mistakeChance: 0,
+    skipChance: 0,
+    threatBlindness: 0,
+    spellReluctance: 0,
+    scoreNoise: 0,
+    useMinimax: true,
+    minimaxDepth: 6,
+    focusFireWeight: 1.0,
+    comboDetection: true,
+    territoryWeight: 1.0,
+    sacrificeEval: true,
+    // Base budgets start at HARD's own numbers; `intelligence` below scales
+    // them further at runtime (scaleBudget = linear, scaleSearch = √iq).
+    searchBreadth: 28,
+    searchNodeBudget: 40000,
+    searchTimeBudgetMs: 900,
+    castleApproachWeight: 2.6,
+    opponentThreatWeight: 2.0,
+    cohesionWeight: 0.6,
+    archerKiteWeight: 1.1,
+    cavalryFlankWeight: 1.4,
+    knightTankWeight: 1.1,
+    smartSpells: true,
+    economyWeight: 1.4,
+    useMCTS: true,
+    mctsTimeBudgetMs: 1500,
+    mctsRolloutDepth: 4,
+    mctsBreadth: 18,
+    // Maximally sharp and 100% deterministic: always the single best line the
+    // (much deeper) search found, never a sampled runner-up.
+    mctsExploration: 1.0,
+    mctsSelectionTemp: 0,
+    pwAlpha: 0.45,
+    pwK: 1.5,
+    strategyWeight: 2.0,
+    trustSearch: true, // never let the scenario script overwrite the search
+    // THE lever: 60 turns HARD's ~12s/turn search budget into ~90s/turn
+    // (linear) with ~2.7× the depth/breadth (√60 ≈ 7.7). Genuinely slow to
+    // move, but it is searching far enough ahead that a human can no longer
+    // out-calculate it — strength over speed, exactly as requested.
+    intelligence: 60,
   },
 };

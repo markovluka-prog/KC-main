@@ -1612,6 +1612,12 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           this.showDraftScreen('ai', 'hard', null);
           return;
         }
+        if (action === 'start-ai-impossible') {
+          this.requestFullscreenIfNeeded();
+          this._closeSubModals();
+          this.showDraftScreen('ai', 'impossible', null);
+          return;
+        }
         if (action === 'play-online' || action === 'play-online-create') {
           this.requestFullscreenIfNeeded();
           this._closeSubModals();
@@ -2471,20 +2477,25 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       html += `<div class="submenu-section">`;
       html += `<div class="submenu-label">${tr('Играть самому')}</div>`;
       html += `<div class="ai-diff-row">
-        <button class="ai-diff-btn diff-easy" disabled aria-disabled="true" style="opacity:0.45;filter:grayscale(1);cursor:not-allowed">
+        <button class="ai-diff-btn diff-easy" data-action="start-ai-easy">
           <span class="ai-diff-icon">🟢</span>
           <span class="ai-diff-name">${tr('Слабый')}</span>
           <span class="ai-diff-sub">${tr('Новичок')}</span>
         </button>
-        <button class="ai-diff-btn diff-medium" disabled aria-disabled="true" style="opacity:0.45;filter:grayscale(1);cursor:not-allowed">
+        <button class="ai-diff-btn diff-medium" data-action="start-ai-medium">
           <span class="ai-diff-icon">🟡</span>
           <span class="ai-diff-name">${tr('Средний')}</span>
           <span class="ai-diff-sub">${tr('Боец')}</span>
         </button>
-        <button class="ai-diff-btn diff-hard" disabled aria-disabled="true" style="opacity:0.45;filter:grayscale(1);cursor:not-allowed">
+        <button class="ai-diff-btn diff-hard" data-action="start-ai-hard">
           <span class="ai-diff-icon">🔴</span>
           <span class="ai-diff-name">${tr('Сложный')}</span>
           <span class="ai-diff-sub">${tr('Мастер')}</span>
+        </button>
+        <button class="ai-diff-btn diff-impossible" data-action="start-ai-impossible">
+          <span class="ai-diff-icon">⚫</span>
+          <span class="ai-diff-name">${tr('Невозможный')}</span>
+          <span class="ai-diff-sub">${tr('Легенда')}</span>
         </button>
       </div>`;
       html += `<button class="btn" data-action="start-pvp" style="width:100%;text-align:center">👥 ${tr('2 Игрока — на одном устройстве')}</button>`;
@@ -3865,7 +3876,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         return tr("Сюжет");
       }
       if (this.mode === "ai") {
-        const labelMap = { easy: "Слабый", medium: "Средний", hard: "Сложный" };
+        const labelMap = { easy: "Слабый", medium: "Средний", hard: "Сложный", impossible: "Невозможный" };
         const diff = this.aiDifficulty && labelMap[this.aiDifficulty]
           ? tr(labelMap[this.aiDifficulty])
           : (this.aiDifficulty || "");
