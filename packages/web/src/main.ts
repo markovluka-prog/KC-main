@@ -2160,27 +2160,28 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       return `
     <div class="rules" style="font-size:12px">
       <h4>⚔️ Рыцари и Замки</h4>
-      <p>Средневековая пошаговая стратегия на поле 20×10</p>
+      <p>Средневековая пошаговая стратегия на поле 20×20</p>
 
       <h4>🎯 Цель игры</h4>
       <p>Уничтожить всех воинов противника или добиться его капитуляции.</p>
 
       <h4>🗺 Поле боя</h4>
-      <p><strong>Размер:</strong> 20 × 10 клеток</p>
+      <p><strong>Размер:</strong> 20 × 20 клеток</p>
       <p><strong>Замки</strong> (4×4) — стартовые позиции игроков</p>
-      <p><strong>🏰 Лечение в замке:</strong> Рыцарь может восстановить +2 HP или +2 защиты (стоит 2 хода)</p>
-      <p><strong>🧙 Башня Мага</strong> — место для применения заклинаний</p>
-      <p><strong>🏚 Руины</strong> (2×2) — место для поиска артефактов</p>
+      <p><strong>🏰 Лечение в замке:</strong> воин в своём замке полностью восстанавливает ❤️ HP и 🛡 защиту — тратит на это весь ход целиком</p>
+      <p><strong>🧙 Башня Мага</strong> — на старте боя башен на карте нет; рыцарь может <strong>построить</strong> башню на пустой клетке (см. «Катапульта и постройки»). Стрелки на башне получают бонус к дальности</p>
+      <p><strong>🎁 Закопанная добыча</strong> — невидимые предметы разбросаны по всей карте (не в отдельной зоне), подбираются автоматически при проходе по клетке</p>
 
       <h4>👥 Войска</h4>
-      <p>Каждый игрок управляет <strong>10 воинами</strong>. Состав выбирается перед боем:</p>
+      <p>Каждый игрок управляет <strong>11 воинами</strong>. Состав выбирается перед боем среди 8 готовых пресетов:</p>
       <ul>
         <li>🛡 <strong>Рыцарь:</strong> ❤️ 3 | ⚔ 5 | 🛡 4 | 🏃 2 — ближний бой (↑↓←→)</li>
         <li>🐎 <strong>Конный:</strong> ❤️ 5 | ⚔ 6 | 🛡 3 | 🏃 3 — прыжок через врага</li>
         <li>🏹 <strong>Лучник:</strong> ❤️ 3 | ⚔ 3 | 🛡 1 | 🏃 3 — зона 5×5</li>
-        <li>🪨 <strong>Катапульта:</strong> ❤️ 2 | ⚔ 7 | 🛡 1 | 🏃 1 — дальний бой 3–6 клеток, мёртвая зона вблизи</li>
+        <li>🪨 <strong>Катапульта:</strong> ❤️ 2 | ⚔ 7 | 🛡 1 | 🏃 2 — дальний бой 3–6 клеток, мёртвая зона вблизи</li>
         <li>🎯 <strong>Арбалетчик:</strong> ❤️ 3 | ⚔ 5 | 🛡 2 | 🏃 2 — пробивной выстрел: 2 хода, бьёт по прямой на 2 клетки насквозь (задевает и своих!)</li>
         <li>⚡ <strong>Самурай:</strong> ❤️ 2 | ⚔ 5 | 🛡 1 | 🏃 3 — ближний бой в 8 направлениях (+ диагонали)</li>
+        <li>🧙 <strong>Боевой маг:</strong> ❤️ 2 | ⚔ 0 (весь урон — из энергии) | 🛡 0 | 🏃 2 — 4 способности вместо обычной атаки, см. ниже</li>
       </ul>
 
       <h4>⚔️ Боевая механика</h4>
@@ -2197,8 +2198,12 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>• Когда 3 воина завершили действия → ход переходит сопернику</p>
 
       <h4>🗡 Атака и движение</h4>
-      <p><strong>🛡 Рыцарь и 🐎 Конный</strong></p>
-      <p><strong>Движение:</strong> 1 клетка (↑↓←→) = 1 очко</p>
+      <p><strong>Движение у всех воинов — только по прямой</strong> (↑↓←→, без диагоналей), 1 клетка = 1 очко. Лучник и Катапульта за один раз проходят до 2–3 клеток по прямой линии; остальные — по 1 клетке за шаг.</p>
+
+      <p><strong>🛡 Рыцарь и ⚡ Самурай — обычный ближний бой</strong></p>
+      <p><strong>Атака (1 очко):</strong> бьёт врага на соседней клетке и остаётся на месте — без прыжка. Рыцарь атакует только по прямой (↑↓←→), Самурай — ещё и по диагоналям (8 направлений)</p>
+
+      <p><strong>🐎 Конный — единственный, кто прыгает</strong></p>
       <p><strong>Атака (2 очка):</strong></p>
 
       <p><strong>1) Прямая атака — прыжок через врага</strong></p>
@@ -2222,10 +2227,11 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     ┣━━━━╋━━━━┫  ① Прыжок НА врага
     ┃    ┃ 🐎  ┃  ② Уход в бок (влево)
     ┗━━━━┻━━━━┛  ✓ Приземление</pre>
+      <p>🌊 <strong>Прыжок через реку:</strong> за 2 очка Конный перепрыгивает реку шириной ровно в 1 клетку на свободный дальний берег (мосты переходятся как обычно)</p>
 
       <p><strong>🏹 Лучник</strong></p>
-      <p><strong>Движение:</strong> До 3 клеток (↑↓←→↗↙), 1 клетка = 1 очко</p>
-      <p><strong>Атака (1 очко):</strong> Стреляет в любого врага в зоне 5×5 вокруг себя (включая диагонали)</p>
+      <p><strong>Движение:</strong> до 3 клеток по прямой (↑↓←→) за один раз, 1 клетка = 1 очко</p>
+      <p><strong>Атака:</strong> стреляет в любого врага в зоне 5×5 вокруг себя (включая диагонали); стоимость = расстояние до цели в клетках (1–2 очка)</p>
       <p>Тактика: занять позицию → обстреливать квадратную зону → отойти</p>
       <pre style="font-size:10px;line-height:1.4;margin:6px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:6px;color:#ffe3b2;font-family:monospace">
   Зона поражения (5×5):
@@ -2241,19 +2247,34 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
   ┃🎯 ┃🎯 ┃🎯 ┃🎯 ┃🎯 ┃
   ┗━━━┻━━━┻━━━┻━━━┻━━━┛</pre>
 
-      <h4>🧙 Башня Мага</h4>
-      <p><strong>Условия:</strong> Только 1 воин внутри | Использование = 1 очко</p>
-      <ul>
-        <li>🌧 <strong>Дождь защиты</strong> — +2 HP всем союзникам</li>
-        <li>🔥 <strong>Сталь свободы</strong> — +2 защиты всем (макс = стартовая)</li>
-        <li>☀ <strong>Небо огня</strong> — +2 урона всем союзникам на 2 хода</li>
-      </ul>
-      <p>⚠️ Эффекты не суммируются</p>
+      <h4>🪨 Катапульта и постройки</h4>
+      <p><strong>🪨 Катапульта — атака (1 очко):</strong> бьёт по клетке на дистанции 3–6 (мёртвая зона ближе 3), без учёта препятствий. Вместо удара по юниту может за то же 1 очко кинуть валун на ПУСТУЮ клетку в том же радиусе — она превращается в непроходимую скалу (перекрыть проход/дверь замка нельзя — рядом с замками и на реке/мосту/башне камни не сажают). Попадание тем же выстрелом по уже стоящей скале разбивает её обратно в свободную землю</p>
 
-      <h4>🏚 Руины</h4>
-      <p>Зайдите в зону → потратьте <strong>1 очко</strong> → получите:</p>
-      <p>🔮 артефакт / ⚔️ оружие / 🚫 ничего</p>
-      <p><strong>Колода бесконечна</strong> — можно возвращаться</p>
+      <p><strong>🏗 Постройка (только 🛡 Рыцарь)</strong></p>
+      <p>Встаньте вплотную (по прямой) к цели и потратьте весь ход (ровно 2 очка) — стройка требует 2 таких хода подряд (можно разными рыцарями):</p>
+      <ul>
+        <li>🗼 <strong>Башня</strong> — на любой свободной клетке</li>
+        <li>🌉 <strong>Мост</strong> — только на клетке реки; после постройки имеет 2 очка прочности и разрушается вражеским магом (см. ниже) или обстрелом</li>
+      </ul>
+
+      <h4>🧙 Боевой маг</h4>
+      <p>Не сражается в ближнем бою — вместо этого копит <strong>⚡ Энергию</strong> (максимум 20, +5 в начале каждого своего хода) и тратит её на 4 способности. Каждая способность стоит <strong>1 ход</strong> + энергию:</p>
+      <ul>
+        <li>🔥 <strong>Атака</strong> — урон на любом расстоянии, без прямой видимости. Урон выбираете сами (≥1); цена = урон + расстояние (в клетках) энергии</li>
+        <li>🛡 <strong>Оберег (Ward)</strong> — бесплатно берёт союзника под защиту; когда его бьют, энергия мага тает 1:1 вместо HP союзника. Если энергия кончится — следующий удар проходит насквозь</li>
+        <li>🩸 <strong>Высасывание (Drain)</strong> — только с соседней клетки: забирает 1 ❤️ у любого не защищённого чужим оберегом юнита (даже у своего) и превращает в 5 ⚡ — способ дозаправиться в бою</li>
+        <li>💚 <strong>Лечение</strong> — восстанавливает HP себе или союзнику на любом расстоянии; цена = HP + расстояние энергии</li>
+        <li>🌉 <strong>Поджечь мост</strong> — уничтожает построенный мост на любом расстоянии одним применением; цена = расстояние × 2 энергии</li>
+      </ul>
+      <p>🧙 <strong>Башня Мага</strong> на поле — обычная клетка высоты: даёт бонус к дальности стрелкам (лучник/арбалетчик/катапульта), стоящим на ней, но не связана со способностями мага</p>
+
+      <h4>🎁 Закопанная добыча</h4>
+      <p>Отдельной зоны руин на карте больше нет — вместо неё в начале боя по всей карте (кроме замков, башен и стартовых клеток) случайно и незаметно закапываются:</p>
+      <ul>
+        <li>🧩 <strong>Детали для крафта</strong> (Дерево/Металл/Амулет/Рубин/Стрелы) — ~1.5% клеток карты</li>
+        <li>⚔️ <strong>Готовое оружие</strong> и 🛡 <strong>броня</strong> — по 1 экземпляру каждого вида за бой</li>
+      </ul>
+      <p>Предметы невидимы, пока воин не наступит на клетку — тогда деталь сразу уходит в рюкзак, а оружие/броня надевается на него (или на союзника, если найдено больше не подходит носителю). Никакого отдельного действия/хода тратить не нужно — подбор происходит на обычном ходу движения.</p>
 
       <h4>🏁 Конец игры</h4>
       <p>Победа: ☠️ Все враги уничтожены | 🏳️ Противник сдался</p>
@@ -2263,10 +2284,11 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       <h4>💡 Тактика</h4>
       <p>✅ Сохраняйте защиту воинам</p>
-      <p>✅ Контролируйте центр (башня + руины)</p>
-      <p>✅ L-атака обходит защиту</p>
+      <p>✅ Постройте башню рыцарем — бонус к дальности решает перестрелки</p>
+      <p>✅ Прыжок и L-атака Конного бьют сразу, не тратя ходы на подход</p>
       <p>✅ Лучники — hit-and-run</p>
-      <p>✅ Собирайте артефакты для магии</p>
+      <p>✅ Ведите разведку по клеткам — под ними может быть закопанное оружие или броня</p>
+      <p>✅ Катапульта может завалить проход камнем вместо выстрела по юниту</p>
       <hr class="menu-rule-sep" style="margin-top:16px">
       <button class="btn primary" data-action="start-tutorial" style="margin-top:8px;width:100%">🎓 Начать обучение — пошаговые подсказки</button>
     </div>`;
@@ -2276,27 +2298,28 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       return `
     <div class="rules" style="font-size:12px">
       <h4>⚔️ Knights & Castles</h4>
-      <p>A medieval turn-based strategy on a 20×10 board</p>
+      <p>A medieval turn-based strategy on a 20×20 board</p>
 
       <h4>🎯 Goal</h4>
       <p>Destroy all of the enemy's warriors or force them to surrender.</p>
 
       <h4>🗺 Battlefield</h4>
-      <p><strong>Size:</strong> 20 × 10 cells</p>
+      <p><strong>Size:</strong> 20 × 20 cells</p>
       <p><strong>Castles</strong> (4×4) — players' starting positions</p>
-      <p><strong>🏰 Castle healing:</strong> a unit can restore +2 HP or +2 armour (costs 2 moves)</p>
-      <p><strong>🧙 Mage Tower</strong> — where spells are cast</p>
-      <p><strong>🏚 Ruins</strong> (2×2) — search them for artifacts</p>
+      <p><strong>🏰 Castle healing:</strong> a warrior standing in its own castle fully restores ❤️ HP and 🛡 armour — spends its entire turn doing so</p>
+      <p><strong>🧙 Mage Tower</strong> — no towers stand on the map at the start; a knight can <strong>build</strong> one on any empty cell (see "Catapult & building"). Ranged units on a tower get a range bonus</p>
+      <p><strong>🎁 Buried loot</strong> — invisible pickups scattered across the whole board (not a fixed zone), picked up automatically by walking over them</p>
 
       <h4>👥 Forces</h4>
-      <p>Each player commands <strong>10 warriors</strong>. The roster is chosen before battle:</p>
+      <p>Each player commands <strong>11 warriors</strong>. The roster is chosen before battle from 8 ready-made presets:</p>
       <ul>
         <li>🛡 <strong>Knight:</strong> ❤️ 3 | ⚔ 5 | 🛡 4 | 🏃 2 — melee (↑↓←→)</li>
         <li>🐎 <strong>Cavalry:</strong> ❤️ 5 | ⚔ 6 | 🛡 3 | 🏃 3 — jump over an enemy</li>
         <li>🏹 <strong>Archer:</strong> ❤️ 3 | ⚔ 3 | 🛡 1 | 🏃 3 — 5×5 zone</li>
-        <li>🪨 <strong>Catapult:</strong> ❤️ 2 | ⚔ 7 | 🛡 1 | 🏃 1 — ranged 3–6 cells, dead zone up close</li>
+        <li>🪨 <strong>Catapult:</strong> ❤️ 2 | ⚔ 7 | 🛡 1 | 🏃 2 — ranged 3–6 cells, dead zone up close</li>
         <li>🎯 <strong>Crossbowman:</strong> ❤️ 3 | ⚔ 5 | 🛡 2 | 🏃 2 — piercing bolt: costs 2 moves, fires 2 cells in a straight line through everyone on it (allies included!)</li>
         <li>⚡ <strong>Samurai:</strong> ❤️ 2 | ⚔ 5 | 🛡 1 | 🏃 3 — melee in 8 directions (+ diagonals)</li>
+        <li>🧙 <strong>Battle Mage:</strong> ❤️ 2 | ⚔ 0 (all damage comes from energy) | 🛡 0 | 🏃 2 — 4 abilities instead of a regular attack, see below</li>
       </ul>
 
       <h4>⚔️ Combat</h4>
@@ -2313,8 +2336,12 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>• Once 3 warriors have acted → the turn passes to the opponent</p>
 
       <h4>🗡 Attack & movement</h4>
-      <p><strong>🛡 Knight & 🐎 Cavalry</strong></p>
-      <p><strong>Move:</strong> 1 cell (↑↓←→) = 1 point</p>
+      <p><strong>Every warrior only moves in a straight line</strong> (↑↓←→, no diagonals), 1 cell = 1 point. Archer and Catapult can cover 2–3 cells in one straight move; everyone else steps 1 cell at a time.</p>
+
+      <p><strong>🛡 Knight & ⚡ Samurai — plain melee</strong></p>
+      <p><strong>Attack (1 point):</strong> hits an adjacent enemy and stays put — no jump. Knight only attacks orthogonally (↑↓←→); Samurai also hits diagonally (8 directions)</p>
+
+      <p><strong>🐎 Cavalry — the only unit that jumps</strong></p>
       <p><strong>Attack (2 points):</strong></p>
 
       <p><strong>1) Direct attack — jump over the enemy</strong></p>
@@ -2338,10 +2365,11 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     ┣━━━━╋━━━━┫  ① Jump ONTO the enemy
     ┃    ┃ 🐎  ┃  ② Step aside (left)
     ┗━━━━┻━━━━┛  ✓ Landing</pre>
+      <p>🌊 <strong>River leap:</strong> for 2 points Cavalry can leap a river exactly 1 cell wide onto a free far bank (bridges are crossed normally)</p>
 
       <p><strong>🏹 Archer</strong></p>
-      <p><strong>Move:</strong> up to 3 cells (↑↓←→↗↙), 1 cell = 1 point</p>
-      <p><strong>Attack (1 point):</strong> shoots any enemy in the 5×5 zone around it (incl. diagonals)</p>
+      <p><strong>Move:</strong> up to 3 cells in a straight line (↑↓←→) in one go, 1 cell = 1 point</p>
+      <p><strong>Attack:</strong> shoots any enemy in the 5×5 zone around it (incl. diagonals); cost = distance to the target in cells (1–2 points)</p>
       <p>Tactics: take position → shell the square zone → retreat</p>
       <pre style="font-size:10px;line-height:1.4;margin:6px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:6px;color:#ffe3b2;font-family:monospace">
   Strike zone (5×5):
@@ -2357,19 +2385,34 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
   ┃🎯 ┃🎯 ┃🎯 ┃🎯 ┃🎯 ┃
   ┗━━━┻━━━┻━━━┻━━━┻━━━┛</pre>
 
-      <h4>🧙 Mage Tower</h4>
-      <p><strong>Conditions:</strong> only 1 warrior inside | casting = 1 point</p>
-      <ul>
-        <li>🌧 <strong>Rain of Protection</strong> — +2 HP to all allies</li>
-        <li>🔥 <strong>Steel of Freedom</strong> — +2 armour to all (max = starting)</li>
-        <li>☀ <strong>Sky of Fire</strong> — +2 damage to all allies for 2 turns</li>
-      </ul>
-      <p>⚠️ Effects do not stack</p>
+      <h4>🪨 Catapult & building</h4>
+      <p><strong>🪨 Catapult — attack (1 point):</strong> hits a cell at distance 3–6 (dead zone under 3), ignoring obstacles. Instead of hitting a unit, it can spend that same 1 point to hurl a boulder onto an EMPTY cell in the same range — it becomes impassable rock terrain (castles and their approach are off-limits, as are river/bridge/tower cells). Hitting an existing boulder with the same shot shatters it back into open ground</p>
 
-      <h4>🏚 Ruins</h4>
-      <p>Enter the zone → spend <strong>1 point</strong> → get:</p>
-      <p>🔮 artifact / ⚔️ weapon / 🛡 armour / 🚫 nothing</p>
-      <p><strong>The deck is endless</strong> — you can come back</p>
+      <p><strong>🏗 Building (🛡 Knight only)</strong></p>
+      <p>Stand orthogonally adjacent to the target and spend your whole turn (exactly 2 points) — a build takes 2 such turns in a row (any knight can contribute):</p>
+      <ul>
+        <li>🗼 <strong>Tower</strong> — on any empty cell</li>
+        <li>🌉 <strong>Bridge</strong> — river cells only; once built it has 2 points of durability and can be destroyed by an enemy mage (see below) or by bombardment</li>
+      </ul>
+
+      <h4>🧙 Battle Mage</h4>
+      <p>Doesn't fight in melee — instead it stores <strong>⚡ Energy</strong> (max 20, +5 at the start of each of its own turns) and spends it on 4 abilities. Each ability costs <strong>1 move</strong> plus energy:</p>
+      <ul>
+        <li>🔥 <strong>Attack</strong> — damage at any range, no line-of-sight needed. You pick the damage (≥1); cost = damage + distance (in cells) energy</li>
+        <li>🛡 <strong>Ward</strong> — shields an ally for free; when they're hit, the mage's own energy drains 1:1 instead of the ally's HP. Run out of energy and the next hit goes straight through</li>
+        <li>🩸 <strong>Drain</strong> — adjacent only: takes 1 ❤️ from any unit not warded by another mage (even its own side) and converts it into 5 ⚡ — a way to refuel mid-fight</li>
+        <li>💚 <strong>Heal</strong> — restores HP to itself or an ally at any range; cost = HP + distance energy</li>
+        <li>🌉 <strong>Burn bridge</strong> — destroys a built bridge outright at any range in one shot; cost = distance × 2 energy</li>
+      </ul>
+      <p>🧙 The <strong>Mage Tower</strong> on the map is just high ground: it boosts range for ranged units (archer/crossbow/catapult) standing on it, unrelated to the mage's own abilities</p>
+
+      <h4>🎁 Buried loot</h4>
+      <p>There's no separate ruins zone on the map anymore — instead, at the start of the battle, items are scattered invisibly across the whole board (excluding castles, towers and starting cells):</p>
+      <ul>
+        <li>🧩 <strong>Crafting parts</strong> (Wood/Metal/Amulet/Ruby/Arrows) — ~1.5% of the board's cells</li>
+        <li>⚔️ <strong>Ready-made weapons</strong> and 🛡 <strong>armour</strong> — exactly 1 of each kind per match</li>
+      </ul>
+      <p>Items stay hidden until a warrior steps on their cell — a part goes straight into its backpack, gear gets worn by it (or offered to a compatible ally if it can't use it itself). No separate action or turn cost — picking things up happens on an ordinary move.</p>
 
       <h4>🏁 End of game</h4>
       <p>Win: ☠️ all enemies destroyed | 🏳️ opponent surrendered</p>
@@ -2379,10 +2422,11 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       <h4>💡 Tactics</h4>
       <p>✅ Keep your warriors' armour up</p>
-      <p>✅ Control the centre (tower + ruins)</p>
-      <p>✅ The L-attack bypasses armour</p>
+      <p>✅ Have a knight build a tower — its range bonus decides skirmishes</p>
+      <p>✅ Cavalry's jump/L-attack strikes without spending moves closing the distance</p>
       <p>✅ Archers — hit-and-run</p>
-      <p>✅ Collect artifacts for magic</p>
+      <p>✅ Scout every cell — buried weapons or armour could be underfoot</p>
+      <p>✅ A catapult can wall off a corridor with a boulder instead of shooting a unit</p>
       <hr class="menu-rule-sep" style="margin-top:16px">
       <button class="btn primary" data-action="start-tutorial" style="margin-top:8px;width:100%">🎓 Start tutorial — step-by-step hints</button>
     </div>`;
@@ -2413,7 +2457,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       return `
         <div class="submenu-section">
           <div class="rules" style="font-size:12px;line-height:1.55;color:var(--muted)">
-            <p>${tr('Средневековая пошаговая стратегия для 2 игроков на поле 20×10. Уничтожь войско противника или вынуди его капитулировать.')}</p>
+            <p>${tr('Средневековая пошаговая стратегия для 2 игроков на поле 20×20. Уничтожь войско противника или вынуди его капитулировать.')}</p>
           </div>
         </div>
         <div class="submenu-section">
@@ -2799,7 +2843,11 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       const container = document.getElementById('draftPresets');
       if (container) {
         container.innerHTML = ARMY_PRESETS.map((p) => {
-          const countByType = { knight: 0, cavalry: 0, archer: 0 };
+          // Count every roster slot the drafter can actually pick (all 7 unit
+          // types), not just the original 3 — a preset like 'siege' (catapults)
+          // or 'mages' (3 mages) used to render with missing/wrong chips because
+          // this map only knew about knight/cavalry/archer.
+          const countByType = { knight: 0, cavalry: 0, archer: 0, catapult: 0, crossbow: 0, samurai: 0, mage: 0 };
           p.units.forEach((u) => { if (u.type in countByType) countByType[u.type]++; });
           const chips = Object.entries(countByType)
             .filter(([, n]) => n > 0)
@@ -4164,12 +4212,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           const allies = this.adjacentAllies(this.selectedUnit);
           const allyClicked = allies.find((a) => a.row === row && a.col === col);
           if (allyClicked) {
+            // Bug fix: this used to fire confirmTransfer() immediately once a
+            // target was picked (if items were already checked), so clicking an
+            // ally on the map to look at them — with a checkbox left ticked from
+            // an earlier transfer — silently gave away items with no explicit
+            // confirmation. A map click now only PICKS the target, same as the
+            // list button; "Отдать" is the one and only action that commits it.
             this.transferTargetId = allyClicked.id;
-            const sel = this.transferSelection || {};
-            const hasSelection = PARTS.some((p) => sel['part:' + p]) || sel.weapon || sel.armor;
-            if (hasSelection) {
-              this.confirmTransfer();
-            }
             this.renderSidebar();
             return;
           }
@@ -5241,17 +5290,19 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         return;
       }
 
-      // Otherwise let the player put it on a compatible ally.
-      const targets = this.weaponEquipTargets(gear);
-      if (targets.length > 0) {
-        this.queueWeaponEquip(gear, found.kind === "armor" ? "Найдена броня" : "Найдено оружие");
-        return;
-      }
-
-      // Nobody can wear it — it stays on the cell as ordinary loot.
+      // Bug fix: this used to force a blocking "Обязательная экипировка"
+      // picker onto the sidebar whenever SOME other ally on the whole board
+      // could wear it — even though the finder itself can't carry an
+      // unworn item (no separate inventory slot for that, only weapon/
+      // armorGear, which is what's actually equipped). The finder just
+      // can't use it, full stop: drop it on the ground as ordinary loot,
+      // same as when literally nobody can wear it. A player who wants it on
+      // a specific ally can still walk that ally over to pick it up, or use
+      // the "Передать предметы" panel once it's carried by someone who can.
       this.pushDroppedGear(item.slot, item, unit.row, unit.col);
-      this.lastEvent = tr("{label}, но некому экипировать. Выброшено.", {
+      this.lastEvent = tr("{label}, но {name} не может его носить. Оставлено на земле.", {
         label: tr(found.kind === "armor" ? "Найдена броня" : "Найдено оружие"),
+        name: this.trName(unit.name),
       });
     }
 
@@ -5587,27 +5638,23 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         return true;
       }
 
-      const targets = this.weaponEquipTargets(recipe);
-      if (targets.length > 0) {
-        this.queueWeaponEquip(recipe, "Скрафчено");
-        if (this.selectedUnit.movesLeft <= 0) {
-          this.selectedUnit.done = true;
-          this.selectedUnit.movesLeft = 0;
-          this.selectedUnit = null;
-          this.clearHighlights();
-        } else {
-          this.rebuildHighlights();
-        }
-        this.renderSidebar();
+      // Bug fix: same as found gear — the crafter can't carry an item it
+      // can't wear (no separate "unworn inventory" slot), so this used to
+      // force the blocking "Обязательная экипировка" picker onto the
+      // sidebar just because SOME other ally on the board could wear it.
+      // Drop it on the crafter's cell as ordinary loot instead; anyone who
+      // wants it can walk over and pick it up.
+      this.pushDroppedGear("weapon", recipe, this.selectedUnit.row, this.selectedUnit.col);
+      this.lastEvent = tr("Скрафчено: {name}, но {crafter} не может его носить. Оставлено на земле.", {
+        name: this.trName(recipe.name),
+        crafter: this.trName(this.selectedUnit.name),
+      });
+      this.message = tr("Оружие оставлено на земле.");
+      if (this.selectedUnit.movesLeft <= 0) {
+        this.finishSelectedUnit();
       } else {
-        this.lastEvent = tr("Скрафчено оружие, но некому экипировать. Оружие выброшено.");
-        this.message = tr("Оружие выброшено.");
-        if (this.selectedUnit.movesLeft <= 0) {
-          this.finishSelectedUnit();
-        } else {
-          this.rebuildHighlights();
-          this.renderSidebar();
-        }
+        this.rebuildHighlights();
+        this.renderSidebar();
       }
       return true;
     }
@@ -5662,27 +5709,18 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         return true;
       }
 
-      const targets = this.weaponEquipTargets(recipe);
-      if (targets.length > 0) {
-        this.queueWeaponEquip(recipe, "Скрафчено");
-        if (this.selectedUnit.movesLeft <= 0) {
-          this.selectedUnit.done = true;
-          this.selectedUnit.movesLeft = 0;
-          this.selectedUnit = null;
-          this.clearHighlights();
-        } else {
-          this.rebuildHighlights();
-        }
-        this.renderSidebar();
+      // Bug fix: same as craftWeapon — no forced picker, just drop it.
+      this.pushDroppedGear("armor", recipe, this.selectedUnit.row, this.selectedUnit.col);
+      this.lastEvent = tr("Скрафчено: {name}, но {crafter} не может её носить. Оставлено на земле.", {
+        name: this.trName(recipe.name),
+        crafter: this.trName(this.selectedUnit.name),
+      });
+      this.message = tr("Броня оставлена на земле.");
+      if (this.selectedUnit.movesLeft <= 0) {
+        this.finishSelectedUnit();
       } else {
-        this.lastEvent = tr("Скрафчена броня, но некому экипировать. Броня выброшена.");
-        this.message = tr("Броня выброшена.");
-        if (this.selectedUnit.movesLeft <= 0) {
-          this.finishSelectedUnit();
-        } else {
-          this.rebuildHighlights();
-          this.renderSidebar();
-        }
+        this.rebuildHighlights();
+        this.renderSidebar();
       }
       return true;
     }
@@ -5960,15 +5998,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       }
       html += "</div>";
 
-      html += '<div class="line" style="font-weight:bold;margin-bottom:4px">' + tr('2. Выберите союзника — на карте или в списке:') + '</div>';
-      html += '<div class="transfer-target-row" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
-      allies.forEach((ally) => {
-        const active = this.transferTargetId === ally.id;
-        html += '<button class="btn' + (active ? ' primary' : ' secondary') + '" data-action="transfer-pick-target" data-unit-id="' + ally.id + '">'
-          + this.escape(this.trName(ally.name)) + ' (#' + ally.id + ')</button>';
-      });
-      html += "</div>";
-
+      // Target is picked by clicking the ally ON THE MAP (transferOpenUnitId
+      // branch in the canvas click handler sets transferTargetId there) — the
+      // button-list duplicate was removed. "Отдать" stays the one explicit
+      // action that commits the transfer.
       const target = this.transferTargetId != null ? allies.find((a) => a.id === this.transferTargetId) : null;
       const hasSelection = PARTS.some((p) => sel['part:' + p]) || sel.weapon || sel.armor;
 
@@ -5977,7 +6010,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         html += '<button class="btn primary" data-action="transfer-confirm" ' + (hasSelection ? '' : 'disabled') + '>'
           + tr('Отдать') + ' (' + this.escape(this.trName(target.name)) + ')</button> ';
       } else {
-        html += '<div class="line text-muted" style="font-size:12px;margin-bottom:6px">' + tr('💡 Кликните по союзнику на карте или в списке выше, чтобы передать.') + '</div>';
+        html += '<div class="line text-muted" style="font-size:12px;margin-bottom:6px">' + tr('💡 Кликните по союзнику на карте, чтобы выбрать получателя.') + '</div>';
       }
       html += '<button class="btn secondary" data-action="transfer-cancel">' + tr('Закрыть') + '</button>';
       html += "</div>";
@@ -6008,8 +6041,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           anyParts = true;
         }
       });
-      const wantsWeapon = !!sel.weapon && !!from.weapon && !to.weapon;
-      const wantsArmor = !!sel.armor && !!from.armorGear && !to.armorGear;
+      // Bug fix: this used to only check the receiving slot was free
+      // (!to.weapon / !to.armorGear), never whether that unit TYPE can
+      // legally wear the item — a bow handed to a knight silently "worked"
+      // client-side even though the server (apply.ts's canEquipGear) already
+      // rejected it. Same allowedTypes/forbidTypes check the pickup path uses.
+      const wantsWeapon = !!sel.weapon && !!from.weapon && this.canEquipGearForPickup(from.weapon, to);
+      const wantsArmor = !!sel.armor && !!from.armorGear && this.canEquipGearForPickup({ ...from.armorGear, slot: 'armor' }, to);
       if (!anyParts && !wantsWeapon && !wantsArmor) return false;
 
       if (this.online) {

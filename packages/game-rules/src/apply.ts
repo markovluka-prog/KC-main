@@ -389,6 +389,21 @@ function findUnit(state: GameState, id: number): SerializedUnit | null {
 }
 
 /**
+ * A mage that just died (in combat, or overdrawn absorbing a ward hit — see
+ * absorbWithWard below) leaves every unit it was warding pointing at a dead
+ * id. absorbWithWard's own `mage.hp > 0` check already stops that stale link
+ * from blocking damage on their NEXT hit, but until then the flag — and the
+ * client's 🛡️ badge that mirrors it — stays up as if the shield still held.
+ * Call this the moment a mage's death is applied so the shield visibly drops
+ * with its caster instead of lingering.
+ */
+function clearWardsCastBy(next: GameState, deadMageId: number): void {
+  for (const u of next.units) {
+    if (u.wardedBy === deadMageId) u.wardedBy = null;
+  }
+}
+
+/**
  * Ward check run before ANY damage is applied to `target`: if a living mage
  * currently shields it (`target.wardedBy`), the hit is fully absorbed (the
  * caller must skip applying `rawDamage` to `target` entirely) and the
@@ -430,6 +445,7 @@ function absorbWithWard(
     // Not enough energy to cover the drain — the shield still holds (target
     // takes 0) but the mage itself dies from the overdraw.
     dropUnitBackpack(next, mage);
+    clearWardsCastBy(next, mage.id);
     next.units = next.units.filter((u) => u.id !== mage.id);
     events.push({ kind: 'mage-died-overdrawn', data: { unitId: mage.id, targetId: target.id, needed: cost, had: mageEnergy } });
     events.push({ kind: 'unit-killed', data: { unitId: mage.id } });
@@ -822,6 +838,7 @@ function applyPierceAttack(
 
     if (target.hp <= 0) {
       dropUnitBackpack(next, target);
+      if (target.type === 'mage') clearWardsCastBy(next, target.id);
       events.push({ kind: 'unit-killed', data: { unitId: target.id } });
     }
   }
@@ -966,6 +983,7 @@ function applyAttack(
   if (target.hp <= 0) {
     // Drop the slain unit's whole backpack onto its cell so it can be picked up later.
     dropUnitBackpack(next, target);
+    if (target.type === 'mage') clearWardsCastBy(next, target.id);
     next.units = next.units.filter((u) => u.id !== target.id);
     events.push({ kind: 'unit-killed', data: { unitId: target.id } });
     maybeFinishMatch(next, events);
@@ -1462,6 +1480,7 @@ function applyMageAttack(
   events.push({ kind: 'mage-attacked', data: { unitId: nextMage.id, targetId: nextTarget.id, damage, hpLeft: nextTarget.hp, cost } });
   if (nextTarget.hp <= 0) {
     dropUnitBackpack(next, nextTarget);
+    if (nextTarget.type === 'mage') clearWardsCastBy(next, nextTarget.id);
     next.units = next.units.filter((u) => u.id !== nextTarget.id);
     events.push({ kind: 'unit-killed', data: { unitId: nextTarget.id } });
     maybeFinishMatch(next, events);
