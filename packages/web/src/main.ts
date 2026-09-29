@@ -79,6 +79,7 @@ import { Unit } from './game/Unit.js';
 import { Board } from './game/Board.js';
 import { AIPlayer } from './game/ai.js';
 import { ApiClient } from './api/client.js';
+import { isNativeAuthAvailable } from './net/auth-google.js';
 import { isAdminEmail } from './admin.js';
 import { sanitizeNickname } from './util/nickname.js';
 import { SupabaseMatchClient } from './net/supabase-match-client.js';
@@ -2743,6 +2744,15 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       if (!modal) return;
       this._authModalBound = true;
 
+      // Google sign-in only works inside the native macOS wrapper (see
+      // net/auth-google.ts) — in a plain browser it always throws "Вход через
+      // Google доступен только в приложении.", so hide the button there
+      // instead of showing a control that's guaranteed to fail on click.
+      const googleBtn = document.getElementById('authGoogleBtn');
+      if (googleBtn && !isNativeAuthAvailable()) {
+        googleBtn.style.display = 'none';
+      }
+
       const tabLogin = document.getElementById('authTabLogin');
       const tabSignup = document.getElementById('authTabSignup');
       const nameInput = document.getElementById('authName');
@@ -4999,22 +5009,25 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.turnEndWave = 1; // Anim #7: trigger radial pulse wave
       this.undoStack = []; // in-turn undo only — cleared when the turn ends
 
-      // Уменьшаем счётчик щита текущего игрока (его ход заканчивается)
-      // Щит защищает от атак противника, поэтому уменьшается в конце хода противника
-      const attacker = this.currentPlayer;
-      const defender = otherPlayer(this.currentPlayer);
-      
-      // Уменьшаем щит защитника после хода атакующего
-      if (this.shieldTurns[defender] > 0) {
-        this.shieldTurns[defender] -= 1;
-      }
-      
-      // Уменьшаем бафф урона атакующего после его хода
-      if (this.damageBuff[attacker] > 0) {
-        this.damageBuff[attacker] -= 1;
+      // Bug fix: this used to decrement shieldTurns[otherPlayer(ending)] while
+      // damageBuff[ending] used the player whose turn is ending — two
+      // different indices for two fields that @kc/game-rules' apply.ts
+      // (endTurn) always decrements for the same player (`ending`). Harmless
+      // today only because both fields are permanently 0 on the client (the
+      // old "Небо огня" spell that set them is gone), but real drift the
+      // moment either is ever populated again. Match the server: both use
+      // `ending`, the player whose turn just finished.
+      const ending = this.currentPlayer;
+
+      if (this.shieldTurns[ending] > 0) {
+        this.shieldTurns[ending] -= 1;
       }
 
-      this.currentPlayer = defender;
+      if (this.damageBuff[ending] > 0) {
+        this.damageBuff[ending] -= 1;
+      }
+
+      this.currentPlayer = otherPlayer(ending);
       this.turnNumber += 1;
       this.startTurn();
     }
@@ -7908,13 +7921,22 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         ctx.fillRect(baseX + 3, hpY, barWidth, 4);
 
         const hpRatio = unit.maxHp > 0 ? Math.max(0, unit.hp) / unit.maxHp : 0;
-        const armorRatio = unit.maxArmor > 0 ? Math.max(0, unit.armor) / unit.maxArmor : 0;
 
         ctx.fillStyle = "#2ed14e";
         ctx.fillRect(baseX + 3, hpY, barWidth * hpRatio, 4);
-        
-        ctx.fillStyle = "#4f91ff";
-        ctx.fillRect(baseX + 3, armorY, barWidth * armorRatio, 4);
+
+        // The mage has no armor (see UNIT_TYPES) — show its energy (spent on
+        // all 4 abilities) in that top bar slot instead, so energy is visible
+        // on the board at a glance without opening its ability panel.
+        if (unit.type === 'mage') {
+          const energyRatio = unit.maxEnergy > 0 ? Math.max(0, unit.energy) / unit.maxEnergy : 0;
+          ctx.fillStyle = "#a855f7";
+          ctx.fillRect(baseX + 3, armorY, barWidth * energyRatio, 4);
+        } else {
+          const armorRatio = unit.maxArmor > 0 ? Math.max(0, unit.armor) / unit.maxArmor : 0;
+          ctx.fillStyle = "#4f91ff";
+          ctx.fillRect(baseX + 3, armorY, barWidth * armorRatio, 4);
+        }
 
         if (unit.done && unit.player === this.currentPlayer) {
           ctx.fillStyle = "rgba(0,0,0,0.35)";

@@ -81,16 +81,19 @@ export class Board implements BoardLike {
       if (u.hp <= 0 && !u.dying && !u.isDead()) {
         if (onDeath) onDeath(u);
         u.startDeath();
-        // Bug fix: a mage dying (in combat, or overdrawn absorbing a ward hit)
-        // used to leave every unit it was warding with a stale wardedBy — the
-        // 🛡️ badge (drawWardBadges) kept pulsing on them for the rest of the
-        // match, and absorbWithWard only cleared the flag lazily on their NEXT
-        // hit. Clear it immediately for everyone this mage was warding, the
-        // moment it starts dying, so the shield visibly drops with its caster.
-        if (u.type === 'mage') {
-          for (const ally of this.units) {
-            if (ally.wardedBy === u.id) ally.wardedBy = null;
-          }
+      }
+      // Bug fix: callers that kill a mage sometimes call unit.startDeath()
+      // themselves before reaching removeDead() (e.g. absorbWithWard on a
+      // ward overdraw), so `dying` is already true by the time we get here
+      // and the block above never runs for that mage — leaving every unit it
+      // was warding with a stale wardedBy. The 🛡️ badge (drawWardBadges) then
+      // keeps pulsing on them for the rest of the match, since absorbWithWard
+      // only cleared the flag lazily on their NEXT hit. Clear it here based on
+      // hp alone (not `dying`) so it always fires once the mage is dead,
+      // however its death was triggered.
+      if (u.type === 'mage' && u.hp <= 0) {
+        for (const ally of this.units) {
+          if (ally.wardedBy === u.id) ally.wardedBy = null;
         }
       }
     }
