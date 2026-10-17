@@ -9,7 +9,7 @@
  *
  * Everything in here is structured-cloneable — no class instances, no functions.
  */
-import type { RuinsArea, TerrainCell, TowerPosition } from '@kc/game-rules';
+import type { Construction, RuinsArea, TerrainCell, TowerPosition } from '@kc/game-rules';
 import type { AIConfig } from './ai-config.js';
 
 export type WorkerPlayer = 1 | 2;
@@ -22,6 +22,8 @@ export interface WorldLayoutSnapshot {
   ruins: RuinsArea;
   ruins2: RuinsArea;
   terrain: TerrainCell[];
+  /** Unfinished build sites — impassable, so the search must see them. */
+  constructions?: Construction[];
 }
 
 /** A unit as the light-state search sees it (structurally LightUnit). */

@@ -5,7 +5,7 @@
 // online match. Pure + DOM-free. Mirrors the client's Board.initUnits +
 // randomizeMapPositions, but seeded so both peers agree.
 import { mulberry32 } from './rng.ts';
-import { COLS, ROWS, START_POSITIONS_P1, UNIT_TYPES } from './constants.ts';
+import { COLS, MAGE_MAX_ENERGY, ROWS, START_POSITIONS_P1, UNIT_TYPES, emptyBackpack } from './constants.ts';
 import { scatterHiddenPickups } from './pickups.ts';
 import type {
   HiddenPickup,
@@ -38,7 +38,7 @@ function buildUnit(
   col: number,
 ): SerializedUnit {
   const t = UNIT_TYPES[pos.type];
-  return {
+  const unit: SerializedUnit = {
     id,
     player,
     type: pos.type,
@@ -60,7 +60,15 @@ function buildUnit(
     deathProgress: 0,
     weapon: null,
     armorGear: null,
+    backpack: emptyBackpack(),
+    wardedBy: null,
   };
+  if (pos.type === 'mage') {
+    unit.maxEnergy = MAGE_MAX_ENERGY;
+    unit.energy = MAGE_MAX_ENERGY;
+    unit.warding = [];
+  }
+  return unit;
 }
 
 /**
@@ -111,32 +119,10 @@ export function createMatchSetup(seed: number): MatchSetup {
     ruins2 = { left: int(maxRuinsCol + 1), top: 8 + int(3), width: 2, height: 2 };
   }
 
-  // Four tower columns spread evenly, avoiding castle footprints.
-  const candidateCols: number[] = [];
-  for (let i = 0; i < COLS; i += 1) {
-    if (!overlapsCastle(i, 1, castleP1Col) && !overlapsCastle(i, 1, castleP2Col)) {
-      candidateCols.push(i);
-    }
-  }
-  // Fisher-Yates shuffle, pick first 4
-  for (let i = candidateCols.length - 1; i > 0; i -= 1) {
-    const j = int(i + 1);
-    const tmp = candidateCols[i]!;
-    candidateCols[i] = candidateCols[j]!;
-    candidateCols[j] = tmp;
-  }
-  const tc: number[] = [
-    candidateCols[0] ?? 8,
-    candidateCols[1] ?? 16,
-    candidateCols[2] ?? 24,
-    candidateCols[3] ?? 32,
-  ];
-  const towers: TowerPosition[] = [
-    { row: 5, col: tc[0]! },
-    { row: 5, col: tc[1]! },
-    { row: 14, col: tc[2]! },
-    { row: 14, col: tc[3]! },
-  ];
+  // Mage towers no longer exist as a fixed match-start feature — towers are
+  // now an ordinary structure knights build themselves (see
+  // BUILD_WORK_TOTAL / applyBuild). The match starts with none.
+  const towers: TowerPosition[] = [];
 
   // River: pick a row that doesn't intersect the ruins area.
   let riverRow = 7 + int(6); // rows 7–12
@@ -145,14 +131,11 @@ export function createMatchSetup(seed: number): MatchSetup {
     if (!rowInRuins(ruins) && !rowInRuins(ruins2)) break;
     riverRow = 7 + int(6);
   }
-  const bridgeCount = 1 + int(2); // 1 or 2 bridges
-  const bridgeCols = new Set<number>();
-  while (bridgeCols.size < bridgeCount) {
-    bridgeCols.add(int(COLS));
-  }
+  // No auto-generated bridges any more — a river is impassable everywhere
+  // until a knight builds a bridge on it (see BUILD_WORK_TOTAL / applyBuild).
   const terrain: TerrainCell[] = [];
   for (let c = 0; c < COLS; c += 1) {
-    terrain.push({ row: riverRow, col: c, type: bridgeCols.has(c) ? 'bridge' : 'river' });
+    terrain.push({ row: riverRow, col: c, type: 'river' });
   }
 
   // Mountains: 5–8 scattered impassable cells in the non-castle mid-board.
@@ -199,6 +182,7 @@ export function createMatchSetup(seed: number): MatchSetup {
     castleP2Col,
     towers,
     occupied: units.map((u) => ({ row: u.row, col: u.col })),
+    terrain,
   });
 
   return { units, towers, ruins, ruins2, castleP1Col, castleP2Col, terrain, hiddenPickups };

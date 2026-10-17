@@ -1,4 +1,4 @@
-import { WEAPONS, type PartName, type Player } from '@kc/game-rules';
+import { WEAPONS, emptyBackpack, type PartName, type Player } from '@kc/game-rules';
 // Common spells were removed from the game entirely — only the mage's own
 // abilities exist now, out of scope for the (unmodified) LLM player.
 const SPELLS: readonly { name: string; recipe: Partial<Record<PartName, number>>; desc: string }[] = [];
@@ -190,7 +190,13 @@ export class LLMPlayer {
     const myUnits = game.ownUnits(this.player).filter((u) => !u.done && game.canUnitAct(u));
     const enemyPlayer: Player = this.player === 1 ? 2 : 1;
     const enemyUnits = game.ownUnits(enemyPlayer);
-    const inv = game.inventory[this.player];
+    // No shared pool any more — sum every unit's own backpack.
+    const inv: Record<PartName, number> = emptyBackpack();
+    for (const u of game.ownUnits(this.player)) {
+      for (const [art, n] of Object.entries(u.backpack ?? {}) as [PartName, number][]) {
+        if (n > 0) inv[art] += n;
+      }
+    }
 
     const myUnitsPayload = myUnits.map((u) => {
       const moves = game.moveActionsFor(u);
@@ -236,7 +242,8 @@ export class LLMPlayer {
 
       if (u.movesLeft >= 1 && !game.pendingWeaponEquip) {
         WEAPONS.forEach((w, wi) => {
-          if (!game.canAfford(inv, w.recipe)) return;
+          // Crafting spends the crafter's own backpack.
+          if (!game.canAfford(u.backpack, w.recipe)) return;
           const allies = game.ownUnits(this.player);
           const hasRecipient = allies.some((ally) => {
             if (ally.hp <= 0) return false;

@@ -64,6 +64,10 @@ import {
   MAGE_BURN_BRIDGE_ENERGY_PER_CELL,
   MAGE_HEAL_ENERGY_PER_HP,
   MAGE_HEAL_ENERGY_PER_CELL,
+  BUILD_WORK_TOTAL,
+  BUILD_COST_PER_TURN,
+  BRIDGE_MAX_DURABILITY,
+  isRockForbiddenZone,
 } from '@kc/game-rules';
 // Storage adapter lives in a separate sub-path so the main barrel stays
 // localStorage-free (Phase 1.5 S1 — server bundle can import only the main
@@ -1112,6 +1116,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           }
         }
 
+        // Esc = back out: cancel any aiming mode first, otherwise drop the
+        // selection (refunding the activation if the unit hasn't acted yet).
+        if (event.key === "Escape" && !isFormField && this.screen === "game") {
+          if (this.cancelSelection()) event.preventDefault();
+          return;
+        }
+
         // Space = skip turn — but never when focus sits on an interactive
         // control or form field (otherwise it both activates and skips).
         if (event.code === KEY_SPACE && !isFormField) {
@@ -1847,7 +1858,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           : null,
         previewUnitId: this.previewUnitId,
         selectedUnitId: this.selectedUnit ? this.selectedUnit.id : null,
-        units: this.board.units.map((u) => ({
+        // Only the living: a unit mid death-animation no longer holds its
+        // cell, so a live unit may already stand there — saving both made the
+        // loader keep the corpse and drop the living unit.
+        units: this.board.units.filter((u) => u.alive()).map((u) => ({
           id: u.id,
           player: u.player,
           type: u.type,
@@ -2164,13 +2178,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>Средневековая пошаговая стратегия на поле 20×20</p>
 
       <h4>🎯 Цель игры</h4>
-      <p>Уничтожить всех воинов противника или добиться его капитуляции.</p>
+      <p>Захватить замок противника: поставить своего воина в его замок 4×4, когда там нет ни одного вражеского воина. Или добиться капитуляции.</p>
 
       <h4>🗺 Поле боя</h4>
       <p><strong>Размер:</strong> 20 × 20 клеток</p>
       <p><strong>Замки</strong> (4×4) — стартовые позиции игроков</p>
       <p><strong>🏰 Лечение в замке:</strong> воин в своём замке полностью восстанавливает ❤️ HP и 🛡 защиту — тратит на это весь ход целиком</p>
-      <p><strong>🧙 Башня Мага</strong> — на старте боя башен на карте нет; рыцарь может <strong>построить</strong> башню на пустой клетке (см. «Катапульта и постройки»). Стрелки на башне получают бонус к дальности</p>
+      <p><strong>🧙 Башня Мага</strong> — на старте боя башен на карте нет; рыцарь может <strong>построить</strong> башню на пустой клетке (см. «Катапульта и постройки»). Стрелки на башне бьют дальше (~×1.5), но слабее (~⅔ урона)</p>
       <p><strong>🎁 Закопанная добыча</strong> — невидимые предметы разбросаны по всей карте (не в отдельной зоне), подбираются автоматически при проходе по клетке</p>
 
       <h4>👥 Войска</h4>
@@ -2199,7 +2213,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>• Когда 3 воина завершили действия → ход переходит сопернику</p>
 
       <h4>🗡 Атака и движение</h4>
-      <p><strong>Движение у всех воинов — только по прямой</strong> (↑↓←→, без диагоналей), 1 клетка = 1 очко. Лучник и Катапульта за один раз проходят до 2–3 клеток по прямой линии; остальные — по 1 клетке за шаг.</p>
+      <p><strong>Движение у всех воинов — только по прямой</strong> (↑↓←→, без диагоналей), 1 клетка = 1 очко. Лучник за один раз проходит до 3 клеток по прямой линии; остальные — по 1 клетке за шаг.</p>
 
       <p><strong>🛡 Рыцарь и ⚡ Самурай — обычный ближний бой</strong></p>
       <p><strong>Атака (1 очко):</strong> бьёт врага на соседней клетке и остаётся на месте — без прыжка. Рыцарь атакует только по прямой (↑↓←→), Самурай — ещё и по диагоналям (8 направлений)</p>
@@ -2249,23 +2263,23 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
   ┗━━━┻━━━┻━━━┻━━━┻━━━┛</pre>
 
       <h4>🪨 Катапульта и постройки</h4>
-      <p><strong>🪨 Катапульта — атака (1 очко):</strong> бьёт по клетке на дистанции 3–6 (мёртвая зона ближе 3), без учёта препятствий. Вместо удара по юниту может за то же 1 очко кинуть валун на ПУСТУЮ клетку в том же радиусе — она превращается в непроходимую скалу (перекрыть проход/дверь замка нельзя — рядом с замками и на реке/мосту/башне камни не сажают). Попадание тем же выстрелом по уже стоящей скале разбивает её обратно в свободную землю</p>
+      <p><strong>🪨 Катапульта — атака (1 очко):</strong> бьёт по клетке на дистанции 3–6 (мёртвая зона ближе 3), без учёта препятствий. Вместо удара по юниту может за то же 1 очко кинуть валун на ПУСТУЮ клетку в том же радиусе — она превращается в непроходимую скалу (перекрыть проход/дверь замка нельзя — рядом с замками и на реке/мосту/башне, стройке и лежащих предметах камни не сажают). Попадание тем же выстрелом по уже стоящей скале разбивает её обратно в свободную землю</p>
 
       <p><strong>🏗 Постройка (только 🛡 Рыцарь)</strong></p>
       <p>Встаньте вплотную (по прямой) к цели и потратьте весь ход (ровно 2 очка) — стройка требует 2 таких хода подряд (можно разными рыцарями):</p>
       <ul>
         <li>🗼 <strong>Башня</strong> — на любой свободной клетке</li>
-        <li>🌉 <strong>Мост</strong> — только на клетке реки; после постройки имеет 2 очка прочности и разрушается вражеским магом (см. ниже) или обстрелом</li>
+        <li>🌉 <strong>Мост</strong> — только на клетке реки; после постройки имеет 2 очка прочности и разрушается вражеским магом (см. ниже) или обстрелом; лежащие на нём предметы тонут вместе с ним</li>
       </ul>
 
       <h4>🧙 Боевой маг</h4>
       <p>Не сражается в ближнем бою — вместо этого копит <strong>⚡ Энергию</strong> (максимум 20, +5 в начале каждого своего хода) и тратит её на 4 способности. Каждая способность стоит <strong>1 ход</strong> + энергию:</p>
       <ul>
         <li>🔥 <strong>Атака</strong> — урон на любом расстоянии, без прямой видимости. Урон выбираете сами (≥1); цена = урон + расстояние (в клетках) энергии</li>
-        <li>🛡 <strong>Оберег (Ward)</strong> — бесплатно берёт союзника под защиту; когда его бьют, энергия мага тает 1:1 вместо HP союзника. Если энергия кончится — следующий удар проходит насквозь</li>
+        <li>🛡 <strong>Оберег (Ward)</strong> — бесплатно берёт союзника под защиту; когда его бьют, энергия мага тает 1:1 вместо HP союзника. Если энергии не хватит, удар всё равно поглощается, но маг погибает от перегрузки</li>
         <li>🩸 <strong>Высасывание (Drain)</strong> — только с соседней клетки: забирает 1 ❤️ у любого не защищённого чужим оберегом юнита (даже у своего) и превращает в 5 ⚡ — способ дозаправиться в бою</li>
         <li>💚 <strong>Лечение</strong> — восстанавливает HP себе или союзнику на любом расстоянии; цена = HP + расстояние энергии</li>
-        <li>🌉 <strong>Поджечь мост</strong> — уничтожает построенный мост на любом расстоянии одним применением; цена = расстояние × 2 энергии</li>
+        <li>🌉 <strong>Поджечь мост</strong> — уничтожает построенный мост на любом расстоянии одним применением; цена = расстояние × 2 энергии; мост, на котором стоит воин, поджечь нельзя</li>
       </ul>
       <p>🧙 <strong>Башня Мага</strong> на поле — обычная клетка высоты: даёт бонус к дальности стрелкам (лучник/арбалетчик/катапульта), стоящим на ней, но не связана со способностями мага</p>
 
@@ -2275,13 +2289,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         <li>🧩 <strong>Детали для крафта</strong> (Дерево/Металл/Амулет/Рубин/Стрелы) — ~1.5% клеток карты</li>
         <li>⚔️ <strong>Готовое оружие</strong> и 🛡 <strong>броня</strong> — по 1 экземпляру каждого вида за бой</li>
       </ul>
-      <p>Предметы невидимы, пока воин не наступит на клетку — тогда деталь сразу уходит в рюкзак, а оружие/броня надевается на него (или на союзника, если найдено больше не подходит носителю). Никакого отдельного действия/хода тратить не нужно — подбор происходит на обычном ходу движения.</p>
+      <p>Предметы невидимы, пока воин не наступит на клетку — тогда деталь сразу уходит в рюкзак, а оружие/броня надевается на него. Если он не может это носить — предмет остаётся лежать на клетке, и его подберёт первый подходящий воин, который туда встанет. Никакого отдельного действия/хода тратить не нужно — подбор происходит на обычном ходу движения.</p>
 
       <h4>🏁 Конец игры</h4>
-      <p>Победа: ☠️ Все враги уничтожены | 🏳️ Противник сдался</p>
+      <p>Победа: 🏰 Ваш воин в замке противника, где нет его воинов | 🏳️ Противник сдался</p>
 
       <h4>⌨️ Управление</h4>
-      <p><strong>ЛКМ</strong> — выбрать/действие | <strong>ПКМ/Пробел</strong> — пропустить ход</p>
+      <p><strong>ЛКМ</strong> — выбрать/действие | <strong>ПКМ/Пробел</strong> — выбранный воин пропускает ход | <strong>Esc</strong> — отменить прицел / снять выбор</p>
 
       <h4>💡 Тактика</h4>
       <p>✅ Сохраняйте защиту воинам</p>
@@ -2302,13 +2316,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>A medieval turn-based strategy on a 20×20 board</p>
 
       <h4>🎯 Goal</h4>
-      <p>Destroy all of the enemy's warriors or force them to surrender.</p>
+      <p>Capture the enemy castle: put one of your warriors inside its 4×4 keep while no enemy warrior is in there. Or force them to surrender.</p>
 
       <h4>🗺 Battlefield</h4>
       <p><strong>Size:</strong> 20 × 20 cells</p>
       <p><strong>Castles</strong> (4×4) — players' starting positions</p>
       <p><strong>🏰 Castle healing:</strong> a warrior standing in its own castle fully restores ❤️ HP and 🛡 armour — spends its entire turn doing so</p>
-      <p><strong>🧙 Mage Tower</strong> — no towers stand on the map at the start; a knight can <strong>build</strong> one on any empty cell (see "Catapult & building"). Ranged units on a tower get a range bonus</p>
+      <p><strong>🧙 Mage Tower</strong> — no towers stand on the map at the start; a knight can <strong>build</strong> one on any empty cell (see "Catapult & building"). Ranged units on a tower shoot further (~×1.5) but weaker (~⅔ damage)</p>
       <p><strong>🎁 Buried loot</strong> — invisible pickups scattered across the whole board (not a fixed zone), picked up automatically by walking over them</p>
 
       <h4>👥 Forces</h4>
@@ -2337,7 +2351,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>• Once 3 warriors have acted → the turn passes to the opponent</p>
 
       <h4>🗡 Attack & movement</h4>
-      <p><strong>Every warrior only moves in a straight line</strong> (↑↓←→, no diagonals), 1 cell = 1 point. Archer and Catapult can cover 2–3 cells in one straight move; everyone else steps 1 cell at a time.</p>
+      <p><strong>Every warrior only moves in a straight line</strong> (↑↓←→, no diagonals), 1 cell = 1 point. The Archer can cover up to 3 cells in one straight move; everyone else steps 1 cell at a time.</p>
 
       <p><strong>🛡 Knight & ⚡ Samurai — plain melee</strong></p>
       <p><strong>Attack (1 point):</strong> hits an adjacent enemy and stays put — no jump. Knight only attacks orthogonally (↑↓←→); Samurai also hits diagonally (8 directions)</p>
@@ -2387,23 +2401,23 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
   ┗━━━┻━━━┻━━━┻━━━┻━━━┛</pre>
 
       <h4>🪨 Catapult & building</h4>
-      <p><strong>🪨 Catapult — attack (1 point):</strong> hits a cell at distance 3–6 (dead zone under 3), ignoring obstacles. Instead of hitting a unit, it can spend that same 1 point to hurl a boulder onto an EMPTY cell in the same range — it becomes impassable rock terrain (castles and their approach are off-limits, as are river/bridge/tower cells). Hitting an existing boulder with the same shot shatters it back into open ground</p>
+      <p><strong>🪨 Catapult — attack (1 point):</strong> hits a cell at distance 3–6 (dead zone under 3), ignoring obstacles. Instead of hitting a unit, it can spend that same 1 point to hurl a boulder onto an EMPTY cell in the same range — it becomes impassable rock terrain (castles and their approach are off-limits, as are river/bridge/tower cells, build sites and dropped loot). Hitting an existing boulder with the same shot shatters it back into open ground</p>
 
       <p><strong>🏗 Building (🛡 Knight only)</strong></p>
       <p>Stand orthogonally adjacent to the target and spend your whole turn (exactly 2 points) — a build takes 2 such turns in a row (any knight can contribute):</p>
       <ul>
         <li>🗼 <strong>Tower</strong> — on any empty cell</li>
-        <li>🌉 <strong>Bridge</strong> — river cells only; once built it has 2 points of durability and can be destroyed by an enemy mage (see below) or by bombardment</li>
+        <li>🌉 <strong>Bridge</strong> — river cells only; once built it has 2 points of durability and can be destroyed by an enemy mage (see below) or by bombardment; items lying on it sink with it</li>
       </ul>
 
       <h4>🧙 Battle Mage</h4>
       <p>Doesn't fight in melee — instead it stores <strong>⚡ Energy</strong> (max 20, +5 at the start of each of its own turns) and spends it on 4 abilities. Each ability costs <strong>1 move</strong> plus energy:</p>
       <ul>
         <li>🔥 <strong>Attack</strong> — damage at any range, no line-of-sight needed. You pick the damage (≥1); cost = damage + distance (in cells) energy</li>
-        <li>🛡 <strong>Ward</strong> — shields an ally for free; when they're hit, the mage's own energy drains 1:1 instead of the ally's HP. Run out of energy and the next hit goes straight through</li>
+        <li>🛡 <strong>Ward</strong> — shields an ally for free; when they're hit, the mage's own energy drains 1:1 instead of the ally's HP. If the energy can't cover a hit, it's still absorbed — but the mage dies from the overload</li>
         <li>🩸 <strong>Drain</strong> — adjacent only: takes 1 ❤️ from any unit not warded by another mage (even its own side) and converts it into 5 ⚡ — a way to refuel mid-fight</li>
         <li>💚 <strong>Heal</strong> — restores HP to itself or an ally at any range; cost = HP + distance energy</li>
-        <li>🌉 <strong>Burn bridge</strong> — destroys a built bridge outright at any range in one shot; cost = distance × 2 energy</li>
+        <li>🌉 <strong>Burn bridge</strong> — destroys a built bridge outright at any range in one shot; cost = distance × 2 energy; a bridge with a warrior standing on it can't be burned</li>
       </ul>
       <p>🧙 The <strong>Mage Tower</strong> on the map is just high ground: it boosts range for ranged units (archer/crossbow/catapult) standing on it, unrelated to the mage's own abilities</p>
 
@@ -2413,13 +2427,13 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         <li>🧩 <strong>Crafting parts</strong> (Wood/Metal/Amulet/Ruby/Arrows) — ~1.5% of the board's cells</li>
         <li>⚔️ <strong>Ready-made weapons</strong> and 🛡 <strong>armour</strong> — exactly 1 of each kind per match</li>
       </ul>
-      <p>Items stay hidden until a warrior steps on their cell — a part goes straight into its backpack, gear gets worn by it (or offered to a compatible ally if it can't use it itself). No separate action or turn cost — picking things up happens on an ordinary move.</p>
+      <p>Items stay hidden until a warrior steps on their cell — a part goes straight into its backpack, gear gets worn by it. If it can't wear it, the item stays on the cell for the first suitable warrior who steps there. No separate action or turn cost — picking things up happens on an ordinary move.</p>
 
       <h4>🏁 End of game</h4>
-      <p>Win: ☠️ all enemies destroyed | 🏳️ opponent surrendered</p>
+      <p>Win: 🏰 your warrior stands in the enemy castle with no defenders inside | 🏳️ opponent surrendered</p>
 
       <h4>⌨️ Controls</h4>
-      <p><strong>LMB</strong> — select/act | <strong>RMB/Space</strong> — end turn</p>
+      <p><strong>LMB</strong> — select/act | <strong>RMB/Space</strong> — the selected warrior skips its turn | <strong>Esc</strong> — cancel aiming / deselect</p>
 
       <h4>💡 Tactics</h4>
       <p>✅ Keep your warriors' armour up</p>
@@ -2458,7 +2472,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       return `
         <div class="submenu-section">
           <div class="rules" style="font-size:12px;line-height:1.55;color:var(--muted)">
-            <p>${tr('Средневековая пошаговая стратегия для 2 игроков на поле 20×20. Уничтожь войско противника или вынуди его капитулировать.')}</p>
+            <p>${tr('Средневековая пошаговая стратегия для 2 игроков на поле 20×20. Захвати пустой замок противника или вынуди его капитулировать.')}</p>
           </div>
         </div>
         <div class="submenu-section">
@@ -2924,6 +2938,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
     performUndo() {
       if (this.online) return; // no undo in server-authoritative online play
+      // A finished match stays finished: the win is already scored and a story
+      // mission already marked done, so rewinding it would desync both.
+      if (this.winner !== null) return;
       const snap = this.undoStack.pop();
       if (!snap) return;
       this.restoreSavedState(snap);
@@ -2955,7 +2972,15 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         setTowers([]);
       }
       if (Array.isArray(snapshot.constructions)) {
-        setConstructions(snapshot.constructions.map((c) => ({ ...c })));
+        // Older saves stored build progress as `hp`.
+        setConstructions(
+          snapshot.constructions.map((c) => ({
+            row: c.row,
+            col: c.col,
+            kind: c.kind,
+            progress: Number(c.progress ?? c.hp ?? 0) || 0,
+          })),
+        );
       } else {
         setConstructions([]);
       }
@@ -4029,8 +4054,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this._tutSteps = [
         tr('Тапни своего воина, чтобы выбрать его.'),
         tr('Зелёные клетки — куда можно пойти. Красные — кого можно атаковать; число над врагом показывает урон.'),
-        tr('За ход активируй до 3 воинов. «↶ Отменить» откатит действие, «⚠ Угрозы» покажет, куда бьёт враг.'),
-        tr('Цель — уничтожить войско противника или захватить его замок. Удачи!'),
+        tr('За ход активируй до 3 воинов. «↶» отменит действие, а тап по врагу покажет, куда он бьёт.'),
+        tr('Цель — встать в замок противника, когда в нём нет его воинов. Удачи!'),
       ];
       this._tutIndex = 0;
       this.showTutorialStep();
@@ -4144,6 +4169,12 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         if (this.currentPlayer === 2 && this.tutorialStep === 2) this._tutorialOnEvent('p2_turn');
         else if (this.currentPlayer === 1 && this.tutorialStep === 3) this._tutorialOnEvent('p1_turn');
       }
+      // Activation is per turn for EVERY unit (apply.ts endTurn) — the side
+      // that just finished must not carry stale `activated` flags into the
+      // AI snapshot or the save.
+      this.board.units.forEach((u) => {
+        u.activated = false;
+      });
       this.ownUnits(this.currentPlayer).forEach((u) => {
         u.resetTurn();
         this.clampUnitArmor(u);
@@ -4410,7 +4441,23 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         this.highlightFrames.set(toKey(m.row, m.col), this.frameCount); // Anim #2
       });
       attacks.forEach((a) => {
-        const key = a.mode === 'shot' || a.mode === 'pierce' ? toKey(a.targetRow, a.targetCol) : toKey(a.row, a.col);
+        if (a.mode === 'pierce') {
+          // A pierce bolt is clicked on a unit it hits, not on its first cell:
+          // that cell is often EMPTY (the victim stands behind it), and keying
+          // the shot there stole the crossbow's plain step onto that square —
+          // the click fired instead of moving. Every occupied cell on the line
+          // triggers it; empty cells stay moves.
+          const line = a.targets && a.targets.length ? a.targets : [{ row: a.targetRow, col: a.targetCol }];
+          line.forEach((cell) => {
+            if (!this.board.unitAt(cell.row, cell.col)) return;
+            const k = toKey(cell.row, cell.col);
+            this.attackChoices.set(k, [a]);
+            this.attackMap.set(k, a);
+            this.highlightFrames.set(k, this.frameCount);
+          });
+          return;
+        }
+        const key = a.mode === 'shot' ? toKey(a.targetRow, a.targetCol) : toKey(a.row, a.col);
         // A cavalry attack is keyed by its LANDING cell, which is very often a
         // cell the unit can also simply walk to. The click handler tests
         // attackMap first, so the shared key turned a plain move into a jump
@@ -4516,12 +4563,14 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
             15
           );
         } else {
-          this.lastEvent = tr("Ты в башне: отсюда можно колдовать.");
+          this.lastEvent = tr("Башня даёт бонус только стрелкам (лучник, арбалетчик, катапульта).");
         }
       }
 
       this.checkWinner();
       if (this.winner !== null) {
+        // A unit that spent its last move is done, win or not (apply.ts parity).
+        if (this.selectedUnit && this.selectedUnit.movesLeft <= 0) this.selectedUnit.done = true;
         this.selectedUnit = null;
         this.clearHighlights();
         // A castle-capturing move ends the game now — ship it immediately
@@ -4631,6 +4680,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
             .filter((t) => !(t.row === action.targetRow && t.col === action.targetCol && t.type === 'bridge'))
             .concat([{ row: action.targetRow, col: action.targetCol, type: 'river' }]);
           setTerrain(newTerrain);
+          this.sinkLootAt(action.targetRow, action.targetCol);
 
           this.createExplosion(targetX, targetY, "#666", 12);
           this.createExplosion(targetX, targetY, "#ffffff", 6);
@@ -4645,7 +4695,16 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           });
         }
 
-        this.renderSidebar();
+        // Same tail as a unit hit: a catapult that spent its last move must
+        // finish (so the turn can auto-end), otherwise refresh the targets —
+        // the old highlight still pointed at a bridge that may be gone now.
+        if (this.selectedUnit.movesLeft <= 0) {
+          this.finishSelectedUnit();
+        } else {
+          this.rebuildHighlights();
+          this.message = tr("Ходов осталось: {n}.", { n: this.selectedUnit.movesLeft });
+          this.renderSidebar();
+        }
         return true;
       }
 
@@ -4745,6 +4804,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       this.checkWinner();
       if (this.winner !== null) {
+        // A unit that spent its last move is done, win or not (apply.ts parity).
+        if (this.selectedUnit && this.selectedUnit.movesLeft <= 0) this.selectedUnit.done = true;
         this.selectedUnit = null;
         this.clearHighlights();
         if (this.online) this.flushTurn();
@@ -4858,6 +4919,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       this.checkWinner();
       if (this.winner !== null) {
+        // A unit that spent its last move is done, win or not (apply.ts parity).
+        if (this.selectedUnit && this.selectedUnit.movesLeft <= 0) this.selectedUnit.done = true;
         this.selectedUnit = null;
         this.clearHighlights();
         if (this.online) this.flushTurn();
@@ -5039,6 +5102,38 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.selectedUnit = null;
       this.clearHighlights();
       this.endTurn();
+    }
+
+    /** Esc handler: cancel aiming, else deselect. Returns true if anything changed. */
+    cancelSelection() {
+      if (this.winner !== null || this.pendingWeaponEquip) return false;
+      if (this.mode === "ai" && this.currentPlayer === 2) return false;
+      if (this.onlineInputLocked()) return false;
+      const unit = this.selectedUnit;
+      if (!unit) return false;
+      if (this.rockMode || this.buildMode || this.mageMode || this.pendingAttackChoice || this.pendingMageAttack) {
+        // rebuildHighlights clears every aiming mode and restores the plain
+        // move/attack highlights for the still-selected unit.
+        this.rebuildHighlights();
+        this.message = tr("Ходов осталось: {n}.", { n: unit.movesLeft });
+        this.renderSidebar();
+        return true;
+      }
+      // Same rule as switching to another unit: an untouched unit gives its
+      // activation back, one that already acted stays activated.
+      if (unit.movesLeft === unit.maxMoves && unit.activated) {
+        unit.activated = false;
+        this.activatedCount = Math.max(0, this.activatedCount - 1);
+      }
+      this.selectedUnit = null;
+      this.transferOpenUnitId = null;
+      this.transferTargetId = null;
+      this.clearHighlights();
+      this.message = tr("Выберите юнит. Осталось активаций: {n}.", {
+        n: Math.max(0, this.maxActivatedPerTurn - this.activatedCount),
+      });
+      this.renderSidebar();
+      return true;
     }
 
     skipSelected(fromAI) {
@@ -5329,13 +5424,23 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
      * existing one there if present. */
     pushDroppedGear(slot, gear, row, col) {
       const item = this.gearToDrop(slot, gear, row, col);
-      let pack = this.droppedBackpacks.find((d) => d.row === row && d.col === col);
+      // Merge into a pack on this cell only if its slot is free — overwriting
+      // used to silently delete gear already lying there.
+      let pack = this.droppedBackpacks.find(
+        (d) => d.row === row && d.col === col && !(slot === "armor" ? d.armorGear : d.weapon),
+      );
       if (!pack) {
         pack = { row, col, parts: emptyBackpack(), weapon: null, armorGear: null };
         this.droppedBackpacks.push(pack);
       }
       if (slot === "armor") pack.armorGear = item;
       else pack.weapon = item;
+    }
+
+    /** A destroyed bridge takes whatever lay on it into the river (mirrors
+     *  apply.ts sinkLootAt) — the marker would otherwise sit on water forever. */
+    sinkLootAt(row, col) {
+      this.droppedBackpacks = this.droppedBackpacks.filter((d) => !(d.row === row && d.col === col));
     }
 
     /** Record the gear + parts of a unit about to die as one dropped backpack
@@ -5355,8 +5460,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       PARTS.forEach((p) => {
         pack.parts[p] = (pack.parts[p] || 0) + (unit.backpack[p] || 0);
       });
-      if (unit.weapon) pack.weapon = this.gearToDrop("weapon", unit.weapon, unit.row, unit.col);
-      if (unit.armorGear) pack.armorGear = this.gearToDrop("armor", unit.armorGear, unit.row, unit.col);
+      if (unit.weapon) this.pushDroppedGear("weapon", unit.weapon, unit.row, unit.col);
+      if (unit.armorGear) this.pushDroppedGear("armor", unit.armorGear, unit.row, unit.col);
     }
 
     gearToDrop(slot, gear, row, col) {
@@ -5397,6 +5502,11 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           this.lastEvent = tr("{name} подбирает детали оружия.", { name: this.trName(unit.name) });
         }
 
+        // The slot is defined by which field the item sits in. Items restored
+        // from a save or a server state carry no `slot` of their own, and
+        // without it a dropped armour piece was equipped as a +damage weapon.
+        if (pack.weapon) pack.weapon = { ...pack.weapon, slot: "weapon" };
+        if (pack.armorGear) pack.armorGear = { ...pack.armorGear, slot: "armor" };
         let leftoverWeapon = pack.weapon;
         let leftoverArmor = pack.armorGear;
         // canEquipWeaponToUnit honours slot + type rules and ownership; pickup
@@ -5783,6 +5893,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     }
 
     checkWinner() {
+      // Already decided — a second call in the same action (e.g. a ward
+      // overdraw inside an attack) must not count the win twice.
+      if (this.winner !== null) return;
       // Победа: занять пустой замок противника (нет его юнитов в его зоне)
       const p1InEnemy = this.board.units.some((u) => u.player === 1 && u.alive() && this.isUnitInEnemyCastle(u));
       const p2InOwnCastle = this.board.units.some((u) => u.player === 2 && u.alive() && this.isUnitInOwnCastle(u));
@@ -6020,7 +6133,20 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       if (target) {
         html += '<div class="line" style="color:#40e0a0;margin-bottom:6px">✓ ' + tr('Выбран получатель:') + ' <strong>' + this.escape(this.trName(target.name)) + '</strong></div>';
-        html += '<button class="btn primary" data-action="transfer-confirm" ' + (hasSelection ? '' : 'disabled') + '>'
+        // Same checks confirmTransfer applies — say so up front instead of a
+        // silent no-op click.
+        const weaponOk = !sel.weapon || !unit.weapon ||
+          this.canEquipGearForPickup(this.gearToDrop("weapon", unit.weapon, unit.row, unit.col), target);
+        const armorOk = !sel.armor || !unit.armorGear ||
+          this.canEquipGearForPickup(this.gearToDrop("armor", unit.armorGear, unit.row, unit.col), target);
+        if (!weaponOk || !armorOk) {
+          html += '<div class="line" style="color:#ffb347;margin-bottom:6px">⚠ ' +
+            tr('{name} не может взять это снаряжение (не тот тип юнита или слот занят).', { name: this.trName(target.name) }) +
+            '</div>';
+        }
+        const sendsParts = PARTS.some((p) => sel['part:' + p]);
+        const canSend = sendsParts || (sel.weapon && weaponOk) || (sel.armor && armorOk);
+        html += '<button class="btn primary" data-action="transfer-confirm" ' + (hasSelection && canSend ? '' : 'disabled') + '>'
           + tr('Отдать') + ' (' + this.escape(this.trName(target.name)) + ')</button> ';
       } else {
         html += '<div class="line text-muted" style="font-size:12px;margin-bottom:6px">' + tr('💡 Кликните по союзнику на карте, чтобы выбрать получателя.') + '</div>';
@@ -6059,8 +6185,15 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       // legally wear the item — a bow handed to a knight silently "worked"
       // client-side even though the server (apply.ts's canEquipGear) already
       // rejected it. Same allowedTypes/forbidTypes check the pickup path uses.
-      const wantsWeapon = !!sel.weapon && !!from.weapon && this.canEquipGearForPickup(from.weapon, to);
-      const wantsArmor = !!sel.armor && !!from.armorGear && this.canEquipGearForPickup({ ...from.armorGear, slot: 'armor' }, to);
+      // Worn gear only carries {name, icon, amount}, so the type limits have
+      // to come from the catalogue (gearToDrop) — checking the bare object
+      // skipped them and let a bow go to a knight or plate to an archer.
+      const wantsWeapon =
+        !!sel.weapon && !!from.weapon &&
+        this.canEquipGearForPickup(this.gearToDrop("weapon", from.weapon, from.row, from.col), to);
+      const wantsArmor =
+        !!sel.armor && !!from.armorGear &&
+        this.canEquipGearForPickup(this.gearToDrop("armor", from.armorGear, from.row, from.col), to);
       if (!anyParts && !wantsWeapon && !wantsArmor) return false;
 
       if (this.online) {
@@ -6135,6 +6268,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         html += '</div>';
       }
       html += '<div class="player-label ' + playerClass + '">' + tr('Игрок {p}', { p: this.currentPlayer }) + '</div>';
+      // Quiet one-line reminder of what's being played (vs AI difficulty /
+      // story mission) — the minimal HUD otherwise never says it.
+      const modeLabel = this.online ? tr("Онлайн") : this.getGameModeLabel();
+      html += '<div class="hint mode-label" style="opacity:0.7;margin:-2px 0 4px">' + this.escape(modeLabel) + '</div>';
 
       // Anim #15: AI thinking indicator — with a real progress bar when the AI
       // is mid-search (time-sliced MCTS reports ai.thinkProgress 0..1).
@@ -6170,7 +6307,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       // P0: in-turn undo button — shown on the human's turn once an action is recorded.
       const humanTurn = !(this.mode === "ai" && this.currentPlayer === 2);
-      if (this.undoStack.length > 0 && humanTurn && !waitingWeaponEquip) {
+      if (this.undoStack.length > 0 && humanTurn && !waitingWeaponEquip && this.winner === null) {
         html += '<button class="btn" data-action="undo" aria-label="' + tr('Отменить') + '" title="' + tr('Отменить') + '">↶</button>';
       }
       if (humanTurn && !waitingWeaponEquip && this.winner === null) {
@@ -8631,6 +8768,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
             )
           )
             continue;
+          // Don't bury an unfinished build site or loot lying on the ground.
+          if (getConstructions().some((k) => k.row === r && k.col === c)) continue;
+          if (this.droppedBackpacks.some((d) => d.row === r && d.col === c)) continue;
           // Castle footprints stay clear too.
           if (this.isInsideCastleZone(r, c)) continue;
           out.push({ row: r, col: c });
@@ -8645,14 +8785,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
      * doorway would trap the defender's army in its own keep with no counter.
      */
     isInsideCastleZone(row, col) {
-      const APPROACH = 2; // rows of clearance kept open in front of each gate
-      const cols = [getCastleP1Col(), getCastleP2Col()];
-      return cols.some(
-        (cc) =>
-          col >= cc &&
-          col < cc + 4 &&
-          (row < 5 + APPROACH || row >= ROWS - 5 - APPROACH),
-      );
+      // Shared with the server reducer's throw-rock validation.
+      return isRockForbiddenZone(row, col, [getCastleP1Col(), getCastleP2Col()]);
     }
 
     /** Enter/leave rock-throwing aim mode for the selected catapult. */
@@ -8678,6 +8812,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       const unit = this.selectedUnit;
       if (!unit || !this.rockMode) return false;
       if (!this.rockTargets.some((t) => t.row === row && t.col === col)) return false;
+
+      if (this.online) {
+        this.recordAction({ kind: "throw-rock", unitId: unit.id, row, col });
+      }
 
       const existing = getTerrain().find(
         (t) => t.row === row && t.col === col && t.type === "rock",
@@ -8913,6 +9051,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       } else if (kind === 'burn-bridge') {
         getTerrain().forEach((t) => {
           if (t.type !== 'bridge') return;
+          // Not out from under a unit — it would be left standing in the river.
+          if (this.board.unitAt(t.row, t.col)) return;
           const dist = Math.max(Math.abs(t.row - unit.row), Math.abs(t.col - unit.col));
           if (energy >= dist * MAGE_BURN_BRIDGE_ENERGY_PER_CELL) out.push({ row: t.row, col: t.col });
         });
@@ -9040,6 +9180,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       this.checkWinner();
       if (this.winner !== null) {
+        // A unit that spent its last move is done, win or not (apply.ts parity).
+        if (this.selectedUnit && this.selectedUnit.movesLeft <= 0) this.selectedUnit.done = true;
         this.selectedUnit = null;
         this.clearHighlights();
         if (this.online) this.flushTurn();
@@ -9099,6 +9241,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.board.removeDead((u) => this.dropUnitGear(u));
       this.checkWinner();
       if (this.winner !== null) {
+        // A unit that spent its last move is done, win or not (apply.ts parity).
+        if (this.selectedUnit && this.selectedUnit.movesLeft <= 0) this.selectedUnit.done = true;
         this.selectedUnit = null;
         this.clearHighlights();
         if (this.online) this.flushTurn();
@@ -9106,9 +9250,12 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         return true;
       }
       if (!unit.alive()) {
+        // The mage died of its own ward overdraw. It was the active unit, so
+        // the turn must still be able to auto-end (same as finishSelectedUnit).
         this.selectedUnit = null;
         this.clearHighlights();
-        this.renderSidebar();
+        if (this.shouldEndTurn()) this.endTurn();
+        else this.renderSidebar();
         return true;
       }
       if (unit.movesLeft <= 0) this.finishSelectedUnit();
@@ -9178,6 +9325,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           .filter((t) => !(t.row === hit.row && t.col === hit.col && t.type === 'bridge'))
           .concat([{ row: hit.row, col: hit.col, type: 'river' }])
       );
+      this.sinkLootAt(hit.row, hit.col);
 
       unit.energy -= cost;
       unit.movesLeft -= 1;
@@ -9312,6 +9460,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       } else {
         this.lastEvent = tr("{name} не выдержал перегрузку щита и погиб!", { name: this.trName(mage.name) });
         this.dropUnitGear(mage);
+        // Dead means hp 0 — removeDead() keys the ward cleanup off it, and a
+        // mage left at full hp kept its 🛡️ badges on every ward it held.
+        mage.hp = 0;
         mage.startDeath();
         this.createExplosion(mage.col * CELL_SIZE + CELL_SIZE / 2, mage.row * CELL_SIZE + CELL_SIZE / 2, "#666", 10);
         this.board.removeDead((u) => this.dropUnitGear(u));
@@ -9368,7 +9519,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         const icon = c.kind === "tower" ? "🏗️" : "🔨";
-        ctx.fillText(`${icon} ${c.hp}/4`, x + CELL_SIZE / 2, y + CELL_SIZE / 2);
+        ctx.fillText(`${icon} ${c.progress}/${BUILD_WORK_TOTAL}`, x + CELL_SIZE / 2, y + CELL_SIZE / 2);
         ctx.restore();
       });
     }
@@ -9412,7 +9563,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
         const constr = constructions.find((c) => c.row === n.row && c.col === n.col);
         if (constr) {
-          if (constr.kind === kind && constr.hp < 4) {
+          if (constr.kind === kind && constr.progress < BUILD_WORK_TOTAL) {
             targets.push(n);
           }
           continue;
@@ -9450,13 +9601,15 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         });
       }
 
-      unit.movesLeft -= 2;
+      unit.movesLeft -= BUILD_COST_PER_TURN;
 
+      // Progress lives in `progress`, same field as @kc/game-rules' Construction
+      // (it used to be `hp` here, so server/AI states and the client disagreed).
       const constructions = getConstructions();
       const existing = constructions.find((c) => c.row === row && c.col === col);
       if (existing) {
-        const nextHp = existing.hp + 2;
-        if (nextHp >= 4) {
+        const nextHp = existing.progress + BUILD_COST_PER_TURN;
+        if (nextHp >= BUILD_WORK_TOTAL) {
           setConstructions(constructions.filter((c) => !(c.row === row && c.col === col)));
           if (kind === "tower") {
             setTowers([...getTowers(), { row, col }]);
@@ -9471,15 +9624,15 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
               nextTerrain.push({ row, col, type: "bridge" });
             }
             setTerrain(nextTerrain);
-            setBridgeDurability({ ...getBridgeDurability(), [`${row},${col}`]: 2 });
+            setBridgeDurability({ ...getBridgeDurability(), [`${row},${col}`]: BRIDGE_MAX_DURABILITY });
             this.lastEvent = tr("{name} завершил постройку моста!", { name: this.trName(unit.name) });
           }
         } else {
-          setConstructions(constructions.map((c) => (c.row === row && c.col === col ? { ...c, hp: nextHp } : c)));
+          setConstructions(constructions.map((c) => (c.row === row && c.col === col ? { ...c, progress: nextHp } : c)));
           this.lastEvent = tr("{name} продолжил строительство ({hp}/4).", { name: this.trName(unit.name), hp: nextHp });
         }
       } else {
-        setConstructions([...constructions, { row, col, kind, hp: 2 }]);
+        setConstructions([...constructions, { row, col, kind, progress: BUILD_COST_PER_TURN }]);
         this.lastEvent = tr("{name} начал строительство ({kind}) (2/4).", {
           name: this.trName(unit.name),
           kind: kind === "tower" ? tr("башня") : tr("мост"),

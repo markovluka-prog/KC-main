@@ -1,4 +1,4 @@
-import { COLS, DEFAULT_RUINS, DEFAULT_TOWERS, MAGE_MAX_ENERGY, PARTS, SAVE_VERSION, UNIT_TYPES, emptyBackpack, } from './constants.js';
+import { ARMORS, BUILD_WORK_TOTAL, BRIDGE_MAX_DURABILITY, COLS, DEFAULT_RUINS, DEFAULT_TOWERS, MAGE_MAX_ENERGY, PARTS, SAVE_VERSION, UNIT_TYPES, emptyBackpack, } from './constants.js';
 import { insideBoard } from './board.js';
 /**
  * Tampering ceiling for a unit's damage when restoring from localStorage.
@@ -9,6 +9,8 @@ import { insideBoard } from './board.js';
  * Real anti-cheat lands in Phase 4 (server-authoritative state).
  */
 export const DESERIALIZED_DAMAGE_BUFF_CAP = 10;
+/** Largest armour bonus any single armour piece can give. */
+const MAX_ARMOR_GEAR_AMOUNT = Math.max(0, ...ARMORS.map((a) => a.amount));
 function toPlayer(value) {
     return value === 2 ? 2 : 1;
 }
@@ -77,11 +79,13 @@ export function validateSerializedUnit(raw) {
     const player = toPlayer(r.player);
     const baseDamage = UNIT_TYPES[r.type].damage;
     const damageCeiling = baseDamage + DESERIALIZED_DAMAGE_BUFF_CAP;
-    const maxHp = Math.max(1, toFiniteInt(r.maxHp, UNIT_TYPES[r.type].hp));
+    // Nothing in the game raises max HP or base armour, so both are capped at
+    // the unit type's own stats (tamper guard, same spirit as the damage cap).
+    const baseHp = UNIT_TYPES[r.type].hp;
+    const maxHp = Math.max(1, Math.min(baseHp, toFiniteInt(r.maxHp, baseHp)));
     const hp = Math.max(0, Math.min(maxHp, toFiniteInt(r.hp, maxHp)));
-    const startArmor = Math.max(0, toFiniteInt(r.startArmor, UNIT_TYPES[r.type].armor));
-    const maxArmor = Math.max(0, Math.min(startArmor, toFiniteInt(r.maxArmor, startArmor)));
-    const armor = Math.max(0, Math.min(maxArmor, toFiniteInt(r.armor, maxArmor)));
+    const baseArmor = UNIT_TYPES[r.type].armor;
+    const startArmor = Math.max(0, Math.min(baseArmor, toFiniteInt(r.startArmor, baseArmor)));
     // T25 P1: cap damage to prevent localStorage tampering.
     const damage = Math.max(0, Math.min(damageCeiling, toFiniteInt(r.damage, baseDamage)));
     const maxMoves = Math.max(1, toFiniteInt(r.maxMoves, UNIT_TYPES[r.type].moves));
@@ -101,9 +105,14 @@ export function validateSerializedUnit(raw) {
         armorGear = {
             name: toString(a.name),
             icon: toString(a.icon),
-            amount: Math.max(0, toFiniteInt(a.amount, 0)),
+            amount: Math.max(0, Math.min(MAX_ARMOR_GEAR_AMOUNT, toFiniteInt(a.amount, 0))),
         };
     }
+    // Worn armour raises maxArmor above startArmor (see equipGearToUnit) — the
+    // cap used to be startArmor alone, so every reload stripped the bonus off.
+    const armorCeiling = startArmor + (armorGear ? armorGear.amount : 0);
+    const maxArmor = Math.max(0, Math.min(armorCeiling, toFiniteInt(r.maxArmor, armorCeiling)));
+    const armor = Math.max(0, Math.min(maxArmor, toFiniteInt(r.armor, maxArmor)));
     const unit = {
         id,
         player,
@@ -201,6 +210,66 @@ function validateDroppedBackpacks(raw) {
     }
     return out;
 }
+function validateConstructions(raw) {
+    if (!Array.isArray(raw))
+        return [];
+    const out = [];
+    for (const item of raw) {
+        if (!item || typeof item !== 'object')
+            continue;
+        const r = item;
+        const row = toFiniteInt(r.row, -1);
+        const col = toFiniteInt(r.col, -1);
+        if (!insideBoard(row, col))
+            continue;
+        if (r.kind !== 'tower' && r.kind !== 'bridge')
+            continue;
+        // Older web saves stored progress as `hp`.
+        const progress = toFiniteInt(r.progress ?? r.hp, 0);
+        if (progress <= 0 || progress >= BUILD_WORK_TOTAL)
+            continue;
+        out.push({ row, col, kind: r.kind, progress });
+    }
+    return out;
+}
+function validateBridgeDurability(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object')
+        return out;
+    for (const [key, value] of Object.entries(raw)) {
+        const m = /^(\d+),(\d+)$/.exec(key);
+        if (!m || !insideBoard(Number(m[1]), Number(m[2])))
+            continue;
+        const hp = toFiniteInt(value, 0);
+        if (hp > 0)
+            out[key] = Math.min(BRIDGE_MAX_DURABILITY, hp);
+    }
+    return out;
+}
+function validateHiddenPickups(raw) {
+    // Absent ⇒ undefined (an old save), so the client knows to scatter fresh
+    // loot; an empty array means "everything was already claimed".
+    if (!Array.isArray(raw))
+        return undefined;
+    const out = [];
+    for (const item of raw) {
+        if (!item || typeof item !== 'object')
+            continue;
+        const r = item;
+        const row = toFiniteInt(r.row, -1);
+        const col = toFiniteInt(r.col, -1);
+        if (!insideBoard(row, col))
+            continue;
+        if (r.kind !== 'part' && r.kind !== 'weapon' && r.kind !== 'armor')
+            continue;
+        if (typeof r.name !== 'string')
+            continue;
+        if (r.kind === 'part' && !PARTS.includes(r.name))
+            continue;
+        out.push({ row, col, kind: r.kind, name: r.name });
+    }
+    return out;
+}
 function validateStoryTask(raw) {
     if (!raw || typeof raw !== 'object')
         return null;
@@ -290,6 +359,10 @@ export function validateSnapshot(raw) {
         const v = validateSerializedUnit(u);
         if (!v)
             continue;
+        // Dead/dying units carry nothing a resumed game needs, and keeping one
+        // could shadow a live unit standing on the same cell (first wins below).
+        if (v.hp <= 0 || v.dying)
+            continue;
         const key = v.row + ',' + v.col;
         if (occupied.has(key))
             continue;
@@ -328,6 +401,9 @@ export function validateSnapshot(raw) {
         },
         pendingWeaponEquip: validatePendingWeaponEquip(r.pendingWeaponEquip),
         droppedBackpacks: validateDroppedBackpacks(r.droppedBackpacks),
+        constructions: validateConstructions(r.constructions),
+        bridgeDurability: validateBridgeDurability(r.bridgeDurability),
+        hiddenPickups: validateHiddenPickups(r.hiddenPickups),
         previewUnitId: Number.isFinite(Number(r.previewUnitId)) ? Number(r.previewUnitId) : null,
         selectedUnitId: Number.isFinite(Number(r.selectedUnitId)) ? Number(r.selectedUnitId) : null,
         units,

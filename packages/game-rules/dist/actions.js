@@ -24,61 +24,15 @@ import { generateAllActions } from './moves.js';
 import { inCastleZone, castleColFor, castleRowFor } from './apply.js';
 import { ARMORS, BUILD_COST_PER_TURN, MAGE_ATTACK_ENERGY_PER_CELL, MAGE_ATTACK_ENERGY_PER_HP, MAGE_BURN_BRIDGE_ENERGY_PER_CELL, MAGE_HEAL_ENERGY_PER_CELL, MAGE_HEAL_ENERGY_PER_HP, WEAPONS, } from './constants.js';
 import { insideBoard } from './board.js';
+import { MAX_ACTIVATIONS_PER_TURN } from './state.js';
 const ORTHO_DIRS = [
     [-1, 0],
     [1, 0],
     [0, -1],
     [0, 1],
 ];
-/** Adapt a `GameState` snapshot into the `BoardLike` shape `moves.ts` expects. */
-export function boardFromState(state) {
-    const alive = state.units.filter((u) => u.hp > 0);
-    const terrain = state.terrain;
-    const towers = state.towers;
-    const constructions = state.constructions ?? [];
-    return {
-        unitAt(row, col) {
-            const found = alive.find((u) => u.row === row && u.col === col);
-            return found ? toUnitState(found) : null;
-        },
-        isFree(row, col) {
-            if (row < 0 || col < 0)
-                return false;
-            if (alive.some((u) => u.row === row && u.col === col))
-                return false;
-            if (terrain.some((t) => t.row === row && t.col === col && (t.type === 'river' || t.type === 'mountain' || t.type === 'rock')))
-                return false;
-            // An unfinished tower/bridge site is impassable, like a mountain.
-            if (constructions.some((c) => c.row === row && c.col === col))
-                return false;
-            return true;
-        },
-        isTower(row, col) {
-            return towers.some((t) => t.row === row && t.col === col);
-        },
-        isRiver(row, col) {
-            return terrain.some((t) => t.row === row && t.col === col && t.type === 'river');
-        },
-        isBridge(row, col) {
-            return terrain.some((t) => t.row === row && t.col === col && t.type === 'bridge');
-        },
-    };
-}
-function toUnitState(u) {
-    return {
-        id: u.id,
-        type: u.type,
-        player: u.player,
-        row: u.row,
-        col: u.col,
-        hp: u.hp,
-        armor: u.armor,
-        damage: u.damage,
-        maxMoves: u.maxMoves,
-        movesLeft: u.movesLeft,
-        name: u.type,
-    };
-}
+export { boardFromState } from './board-state.js';
+import { boardFromState, toUnitState } from './board-state.js';
 /** True if `backpack` holds at least `recipe`'s counts of every part — crafting
  * always spends the crafting unit's OWN backpack, not a shared per-player pool. */
 function canAffordFromBackpack(backpack, recipe) {
@@ -88,14 +42,9 @@ function canAffordFromBackpack(backpack, recipe) {
     }
     return true;
 }
-function inRuins(state, row, col) {
-    const areas = [state.ruins, state.ruins2].filter(Boolean);
-    return areas.some((a) => a.width > 0 && a.height > 0 && row >= a.top && row < a.top + a.height && col >= a.left && col < a.left + a.width);
-}
 /**
  * Every legal action `unit` could take this instant, spanning move, attack,
- * and the economy/support actions (spell/craft/craft-armor/search-ruins/
- * castle-heal). Skips anything the unit can't afford/reach so callers don't
+ * and the economy/support actions (craft/craft-armor/castle-heal/build/mage). Skips anything the unit can't afford/reach so callers don't
  * have to re-derive eligibility — every returned action is expected to
  * succeed if passed straight to `applyAction`.
  *
@@ -122,6 +71,12 @@ export function generateActionsForUnit(state, unitId) {
             : [];
     }
     if (unit.done || unit.movesLeft <= 0)
+        return [];
+    // The turn's activation cap: once MAX_ACTIVATIONS_PER_TURN distinct units
+    // have acted, a fresh unit can't — applyAction rejects it with
+    // 'activation-limit', so offering it here only wasted search effort and
+    // produced plans the reducer refuses.
+    if (!unit.activated && state.activatedCount >= MAX_ACTIVATIONS_PER_TURN)
         return [];
     const board = boardFromState(state);
     const actions = [];
@@ -156,9 +111,10 @@ export function generateActionsForUnit(state, unitId) {
                 actions.push({ kind: 'craft-armor', unitId, index });
             }
         });
-        if (inRuins(state, unit.row, unit.col)) {
-            actions.push({ kind: 'search-ruins', unitId });
-        }
+        // No 'search-ruins': ruins hold nothing any more — loot is buried board-
+        // wide and claimed by walking onto it (the web client's Board.inRuins is
+        // false everywhere). Offering it let the search plan a step the game
+        // refuses.
         const ownRow = castleRowFor(unit.player);
         const ownCol = castleColFor(state, unit.player);
         if (inCastleZone(unit, ownRow, ownCol) && (unit.hp < unit.maxHp || unit.armor < unit.maxArmor)) {
@@ -186,7 +142,9 @@ export function generateActionsForUnit(state, unitId) {
             }
             const occupied = alive.some((u) => u.row === row && u.col === col);
             const isRiver = state.terrain.some((t) => t.row === row && t.col === col && t.type === 'river');
-            const isBlocked = state.terrain.some((t) => t.row === row && t.col === col && (t.type === 'mountain' || t.type === 'rock' || t.type === 'river'));
+            const isBlocked = state.terrain.some((t) => t.row === row &&
+                t.col === col &&
+                (t.type === 'mountain' || t.type === 'rock' || t.type === 'river' || t.type === 'bridge'));
             const hasTower = state.towers.some((t) => t.row === row && t.col === col);
             if (isRiver && !occupied) {
                 actions.push({ kind: 'build-bridge', unitId, row, col });
@@ -260,6 +218,8 @@ function generateMageActions(state, mage) {
     for (const t of state.terrain) {
         if (t.type !== 'bridge')
             continue;
+        if (state.units.some((u) => u.hp > 0 && u.row === t.row && u.col === t.col))
+            continue; // occupied
         const chebyshev = Math.max(Math.abs(t.row - mage.row), Math.abs(t.col - mage.col));
         const cost = chebyshev * MAGE_BURN_BRIDGE_ENERGY_PER_CELL;
         if (energy >= cost) {

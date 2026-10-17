@@ -568,7 +568,7 @@ describe('applyAction — activation cap (3 units/turn)', () => {
     for (const id of [1, 2, 3]) {
       const res = applyAction(
         s,
-        { kind: 'move', unitId: id, row: id + 9, col: 5, cost: 1 },
+        { kind: 'move', unitId: id, row: id - 1, col: 1, cost: 1 },
         mulberry32(1),
       );
       if (!res.ok) throw new Error(`unit ${id} should move, got ${res.error.code}`);
@@ -577,7 +577,7 @@ describe('applyAction — activation cap (3 units/turn)', () => {
     expect(s.activatedCount).toBe(3);
     const fourth = applyAction(
       s,
-      { kind: 'move', unitId: 4, row: 14, col: 5, cost: 1 },
+      { kind: 'move', unitId: 4, row: 3, col: 1, cost: 1 },
       mulberry32(1),
     );
     if (fourth.ok) throw new Error('expected fourth activation to be rejected');
@@ -649,60 +649,76 @@ describe('applyAction — craft + equip', () => {
     expect(res.error.code).toBe('craft-unaffordable');
   });
 
-  it('offers the sword to an ally when the crafter already carries a weapon', () => {
+  it('leaves the sword on the crafter\'s cell when the crafter already carries a weapon', () => {
     const s = swordReady([
       mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, weapon: { name: 'x', icon: '', amount: 1 } }),
       mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
     ]);
     const crafted = applyAction(s, { kind: 'craft', unitId: 1, index: 0 }, mulberry32(1));
     if (!crafted.ok) throw new Error('craft failed');
-    expect(crafted.value.pendingWeaponEquip).not.toBeNull();
-    expect(crafted.value.pendingWeaponEquip!.name).toBe('Солнечный меч');
+    // No forced equip step — the client drops it, so the engine must too.
+    expect(crafted.value.pendingWeaponEquip).toBeNull();
+    expect(crafted.value.droppedBackpacks).toHaveLength(1);
+    expect(crafted.value.droppedBackpacks[0]).toMatchObject({ row: 5, col: 5 });
+    expect(crafted.value.droppedBackpacks[0]!.weapon!.name).toBe('Солнечный меч');
   });
 
-  it('blocks every other action until a pending weapon is equipped', () => {
+  it('an ally stepping onto the dropped sword picks it up', () => {
     const s = swordReady([
       mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, weapon: { name: 'x', icon: '', amount: 1 } }),
       mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
     ]);
     const crafted = applyAction(s, { kind: 'craft', unitId: 1, index: 0 }, mulberry32(1));
     if (!crafted.ok) throw new Error('craft failed');
-    const blocked = applyAction(
-      crafted.value,
-      { kind: 'move', unitId: 2, row: 7, col: 5, cost: 1 },
-      mulberry32(1),
-    );
+    const away = applyAction(crafted.value, { kind: 'move', unitId: 1, row: 4, col: 5, cost: 1 }, mulberry32(1));
+    if (!away.ok) throw new Error(`move failed: ${away.error.code}`);
+    const picked = applyAction(away.value, { kind: 'move', unitId: 2, row: 5, col: 5, cost: 1 }, mulberry32(1));
+    if (!picked.ok) throw new Error(`pickup failed: ${picked.error.code}`);
+    const u = picked.value.units.find((x) => x.id === 2)!;
+    expect(u.weapon?.name).toBe('Солнечный меч');
+    expect(u.damage).toBe(UNIT_TYPES.knight.damage + 3);
+    expect(picked.value.droppedBackpacks).toHaveLength(0);
+  });
+
+  // pendingWeaponEquip survives only for the legacy ruins-search path; the
+  // equip gate itself must still hold whenever it is set.
+  function withPendingSword(units: SerializedUnit[]): GameState {
+    const s = startState(units);
+    s.pendingWeaponEquip = {
+      name: 'Солнечный меч',
+      amount: 3,
+      icon: 'weapon_sword',
+      allowedTypes: null,
+      forbidTypes: ['archer', 'catapult', 'crossbow'],
+      archerOnly: false,
+      slot: 'weapon',
+    };
+    return s;
+  }
+
+  it('blocks every other action until a pending weapon is equipped', () => {
+    const s = withPendingSword([mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 })]);
+    const blocked = applyAction(s, { kind: 'move', unitId: 2, row: 7, col: 5, cost: 1 }, mulberry32(1));
     if (blocked.ok) throw new Error('expected the move to be blocked');
     expect(blocked.error.code).toBe('weapon-pending');
   });
 
   it('equipping a pending weapon binds it: +damage, weapon set, pending cleared', () => {
-    const s = swordReady([
-      mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, weapon: { name: 'x', icon: '', amount: 1 } }),
-      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
-    ]);
-    const crafted = applyAction(s, { kind: 'craft', unitId: 1, index: 0 }, mulberry32(1));
-    if (!crafted.ok) throw new Error('craft failed');
-    const equipped = applyAction(crafted.value, { kind: 'equip-weapon', unitId: 2 }, mulberry32(1));
+    const s = withPendingSword([mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 })]);
+    const equipped = applyAction(s, { kind: 'equip-weapon', unitId: 2 }, mulberry32(1));
     if (!equipped.ok) throw new Error(`equip failed: ${equipped.error.code}`);
     const u = equipped.value.units.find((x) => x.id === 2)!;
     expect(u.damage).toBe(UNIT_TYPES.knight.damage + 3);
-    expect(u.weapon).not.toBeNull();
     expect(u.weapon!.name).toBe('Солнечный меч');
     expect(equipped.value.pendingWeaponEquip).toBeNull();
   });
 
   it('rejects equipping the sword to an archer (forbidden type)', () => {
-    const s = swordReady([
-      // Crafter already armed → offered to an ally; a second knight is eligible too.
-      mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, weapon: { name: 'x', icon: '', amount: 1 } }),
+    const s = withPendingSword([
       mkUnit({ id: 2, player: 1, type: 'archer', row: 6, col: 5 }),
       mkUnit({ id: 3, player: 1, type: 'knight', row: 7, col: 5 }),
     ]);
-    const crafted = applyAction(s, { kind: 'craft', unitId: 1, index: 0 }, mulberry32(1));
-    if (!crafted.ok) throw new Error('craft failed');
-    expect(crafted.value.pendingWeaponEquip).not.toBeNull();
-    const res = applyAction(crafted.value, { kind: 'equip-weapon', unitId: 2 }, mulberry32(1));
+    const res = applyAction(s, { kind: 'equip-weapon', unitId: 2 }, mulberry32(1));
     if (res.ok) throw new Error('expected fail');
     expect(res.error.code).toBe('cannot-equip');
   });
@@ -770,7 +786,7 @@ describe('gear — armour craft + equip', () => {
     expect(res.value.units[0]!.backpack['Дерево']).toBe(0);
   });
 
-  it('queues a pending armour equip when the crafter already wears armour', () => {
+  it('leaves crafted armour on the ground when the crafter already wears armour', () => {
     const knight = mkUnit({
       id: 1,
       player: 1,
@@ -784,22 +800,27 @@ describe('gear — armour craft + equip', () => {
     const maxBefore = s.units[0]!.maxArmor;
     const crafted = applyAction(s, { kind: 'craft-armor', unitId: 1, index: 0 }, mulberry32(1));
     if (!crafted.ok) throw new Error('craft-armor failed');
-    expect(crafted.value.pendingWeaponEquip).toBeNull(); // no other unit to offer it to
-    // The pending slot was dropped since nobody else could take it, so armour didn't change.
+    expect(crafted.value.pendingWeaponEquip).toBeNull();
+    // The crafter's armour slot is taken, so the mail is left on its cell.
+    expect(crafted.value.droppedBackpacks[0]!.armorGear!.name).toBe('Кольчуга');
     expect(crafted.value.units[0]!.armor).toBe(armorBefore);
     expect(crafted.value.units[0]!.maxArmor).toBe(maxBefore);
   });
 
   it('equipping a pending armour piece raises current and max armour and fills the slot', () => {
-    const s = mailReady([
-      mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, armorGear: { name: 'Латы', icon: '', amount: 4 } }),
-      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
-    ]);
-    const armorBefore = s.units[1]!.armor;
-    const maxBefore = s.units[1]!.maxArmor;
-    const crafted = applyAction(s, { kind: 'craft-armor', unitId: 1, index: 0 }, mulberry32(1));
-    if (!crafted.ok) throw new Error('craft-armor failed');
-    const equipped = applyAction(crafted.value, { kind: 'equip-weapon', unitId: 2 }, mulberry32(1));
+    const s = startState([mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 })]);
+    s.pendingWeaponEquip = {
+      name: 'Кольчуга',
+      amount: 2,
+      icon: 'armor_mail',
+      allowedTypes: null,
+      forbidTypes: null,
+      archerOnly: false,
+      slot: 'armor',
+    };
+    const armorBefore = s.units[0]!.armor;
+    const maxBefore = s.units[0]!.maxArmor;
+    const equipped = applyAction(s, { kind: 'equip-weapon', unitId: 2 }, mulberry32(1));
     if (!equipped.ok) throw new Error(`equip failed: ${equipped.error.code}`);
     const u = equipped.value.units.find((x) => x.id === 2)!;
     expect(u.armor).toBe(armorBefore + 2);
@@ -932,7 +953,7 @@ describe('hidden pickups', () => {
     expect(res.value.hiddenPickups).toHaveLength(0);
   });
 
-  it('gear the finder cannot wear is offered to a compatible ally', () => {
+  it('gear the finder cannot wear is left on the cell even if an ally could wear it', () => {
     // An archer cannot hold the sword, but the allied knight can.
     const s = createInitialState({
       mode: 'pvp',
@@ -948,7 +969,8 @@ describe('hidden pickups', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.units.find((u) => u.id === 1)?.weapon).toBeNull();
-    expect(res.value.pendingWeaponEquip?.name).toBe('Солнечный меч');
+    expect(res.value.pendingWeaponEquip).toBeNull();
+    expect(res.value.droppedBackpacks[0]!.weapon!.name).toBe('Солнечный меч');
     expect(res.value.hiddenPickups).toHaveLength(0);
   });
 
@@ -1561,5 +1583,229 @@ describe('mage energy regenerates on its own turn', () => {
     expect(next.units.find((u) => u.id === 2)!.energy).toBe(MAGE_ENERGY_REGEN_PER_TURN);
     next = endTurn(next); // -> player 1's turn; player 1 regenerates, capped at max
     expect(next.units.find((u) => u.id === 1)!.energy).toBe(MAGE_MAX_ENERGY);
+  });
+});
+
+describe('throw-rock', () => {
+  // Castles sit at col 8 by default, so col 0..7 mid-board is open ground.
+  it('drops a boulder on an empty cell in range and spends a move', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'catapult', row: 10, col: 2 })]);
+    const res = applyAction(s, { kind: 'throw-rock', unitId: 1, row: 10, col: 5 }, mulberry32(1));
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.terrain.some((t) => t.row === 10 && t.col === 5 && t.type === 'rock')).toBe(true);
+    expect(res.value.units[0]!.movesLeft).toBe(UNIT_TYPES.catapult.moves - 1);
+  });
+
+  it('shatters an existing boulder back to open ground', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'catapult', row: 10, col: 2 })]);
+    s.terrain = [{ row: 10, col: 5, type: 'rock' }];
+    const res = applyAction(s, { kind: 'throw-rock', unitId: 1, row: 10, col: 5 }, mulberry32(1));
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.terrain).toHaveLength(0);
+  });
+
+  it('rejects the dead zone, castle approach, and non-catapults', () => {
+    const s = startState([
+      mkUnit({ id: 1, player: 1, type: 'catapult', row: 10, col: 2 }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 12, col: 2 }),
+    ]);
+    const near = applyAction(s, { kind: 'throw-rock', unitId: 1, row: 10, col: 3 }, mulberry32(1));
+    expect(near.ok).toBe(false);
+    const gate = startState([mkUnit({ id: 1, player: 1, type: 'catapult', row: 2, col: 4 })]);
+    const atGate = applyAction(gate, { kind: 'throw-rock', unitId: 1, row: 5, col: 8 }, mulberry32(1));
+    expect(atGate.ok).toBe(false);
+    const knight = applyAction(s, { kind: 'throw-rock', unitId: 2, row: 12, col: 6 }, mulberry32(1));
+    expect(knight.ok).toBe(false);
+  });
+
+  it('cannot bury a construction site or dropped loot', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'catapult', row: 10, col: 2 })]);
+    s.constructions = [{ row: 10, col: 5, kind: 'tower', progress: 2 }];
+    s.droppedBackpacks = [
+      { row: 11, col: 5, parts: { ...s.units[0]!.backpack, 'Дерево': 1 }, weapon: null, armorGear: null },
+    ];
+    expect(applyAction(s, { kind: 'throw-rock', unitId: 1, row: 10, col: 5 }, mulberry32(1)).ok).toBe(false);
+    expect(applyAction(s, { kind: 'throw-rock', unitId: 1, row: 11, col: 5 }, mulberry32(1)).ok).toBe(false);
+  });
+});
+
+describe('build — activation cap', () => {
+  it('building uses one of the turn\'s activations', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'knight', row: 10, col: 2 })]);
+    const res = applyAction(s, { kind: 'build-tower', unitId: 1, row: 10, col: 3 }, mulberry32(1));
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.activatedCount).toBe(1);
+  });
+});
+
+describe('move validation', () => {
+  it('rejects a teleport the move generator would never offer', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'knight', row: 0, col: 0 })]);
+    const res = applyAction(s, { kind: 'move', unitId: 1, row: 10, col: 5, cost: 1 }, mulberry32(1));
+    if (res.ok) throw new Error('expected the teleport to be rejected');
+    expect(res.error.code).toBe('illegal-move');
+  });
+
+  it('rejects a legal destination claimed at the wrong cost', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'archer', row: 5, col: 5 })]);
+    expect(applyAction(s, { kind: 'move', unitId: 1, row: 5, col: 8, cost: 1 }, mulberry32(1)).ok).toBe(false);
+    expect(applyAction(s, { kind: 'move', unitId: 1, row: 5, col: 8, cost: 3 }, mulberry32(1)).ok).toBe(true);
+  });
+
+  it('cannot step off the bottom edge of the board', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'knight', row: 19, col: 5 })]);
+    expect(applyAction(s, { kind: 'move', unitId: 1, row: 20, col: 5, cost: 1 }, mulberry32(1)).ok).toBe(false);
+  });
+});
+
+describe('ward drops when its mage dies', () => {
+  it('a mage killed in combat un-wards everyone it shielded', () => {
+    const s = startState([
+      mkUnit({ id: 1, player: 2, type: 'knight', row: 5, col: 4 }),
+      mkUnit({ id: 2, player: 1, type: 'mage', row: 5, col: 5 }),
+      mkUnit({ id: 3, player: 1, type: 'knight', row: 9, col: 9 }),
+    ]);
+    s.currentPlayer = 2;
+    s.units.find((u) => u.id === 3)!.wardedBy = 2;
+    const res = applyAction(
+      s,
+      { kind: 'attack', unitId: 1, mode: 'shot', cost: 1, targetRow: 5, targetCol: 5, landingRow: 5, landingCol: 4 },
+      mulberry32(1),
+    );
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.units.some((u) => u.id === 2)).toBe(false);
+    expect(res.value.units.find((u) => u.id === 3)!.wardedBy).toBeNull();
+  });
+
+  it('a mage dying of ward overdraw un-wards every other unit too', () => {
+    const s = startState([
+      mkUnit({ id: 1, player: 2, type: 'knight', row: 5, col: 4 }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 5, col: 5 }),
+      mkUnit({ id: 3, player: 1, type: 'mage', row: 9, col: 9 }),
+      mkUnit({ id: 4, player: 1, type: 'archer', row: 12, col: 12 }),
+    ]);
+    s.currentPlayer = 2;
+    s.units.find((u) => u.id === 3)!.energy = 1; // can't cover a 5-damage hit
+    s.units.find((u) => u.id === 2)!.wardedBy = 3;
+    s.units.find((u) => u.id === 4)!.wardedBy = 3;
+    const res = applyAction(
+      s,
+      { kind: 'attack', unitId: 1, mode: 'shot', cost: 1, targetRow: 5, targetCol: 5, landingRow: 5, landingCol: 4 },
+      mulberry32(1),
+    );
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.units.some((u) => u.id === 3)).toBe(false); // mage died
+    const knight = res.value.units.find((u) => u.id === 2)!;
+    expect(knight.hp).toBe(UNIT_TYPES.knight.hp); // hit still absorbed
+    expect(knight.wardedBy).toBeNull();
+    expect(res.value.units.find((u) => u.id === 4)!.wardedBy).toBeNull();
+  });
+});
+
+describe('ward overdraw inside a pierce line', () => {
+  it('a mage that died of overdraw is not hit again by the same bolt (no duplicate loot)', () => {
+    // Crossbow (P2) at row 5 fires down: row 6 = warded P1 knight, row 7 = its mage.
+    const s = startState([
+      mkUnit({ id: 1, player: 2, type: 'crossbow', row: 5, col: 5 }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
+      mkUnit({ id: 3, player: 1, type: 'mage', row: 7, col: 5 }),
+    ]);
+    s.currentPlayer = 2;
+    const mage = s.units.find((u) => u.id === 3)!;
+    mage.energy = 1;
+    mage.backpack['Рубин'] = 1;
+    s.units.find((u) => u.id === 2)!.wardedBy = 3;
+    const res = applyAction(
+      s,
+      {
+        kind: 'attack', unitId: 1, mode: 'pierce', cost: 2, targetRow: 6, targetCol: 5, landingRow: 5, landingCol: 5,
+        targets: [{ row: 6, col: 5 }, { row: 7, col: 5 }],
+      },
+      mulberry32(1),
+    );
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    const kills = res.events.filter((e) => e.kind === 'unit-killed' && e.data['unitId'] === 3);
+    expect(kills).toHaveLength(1);
+    const rubies = res.value.droppedBackpacks.reduce((n, d) => n + (d.parts['Рубин'] ?? 0), 0);
+    expect(rubies).toBe(1);
+  });
+});
+
+describe('state left consistent after terrain/loot changes', () => {
+  it('a cavalry jump claims loot buried on its landing cell (client parity)', () => {
+    const s = createInitialState({
+      mode: 'pvp',
+      seed: 1,
+      units: [
+        mkUnit({ id: 1, player: 1, type: 'cavalry', row: 5, col: 5 }),
+        mkUnit({ id: 2, player: 2, type: 'knight', row: 6, col: 5, hp: 9, armor: 9 }),
+      ],
+      hiddenPickups: [{ row: 7, col: 5, kind: 'part', name: 'Дерево' }],
+    });
+    const res = applyAction(
+      s,
+      { kind: 'attack', unitId: 1, mode: 'jump', cost: 2, targetRow: 6, targetCol: 5, landingRow: 7, landingCol: 5 },
+      mulberry32(1),
+    );
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.units.find((u) => u.id === 1)!.backpack['Дерево']).toBe(1);
+    expect(res.value.hiddenPickups).toHaveLength(0);
+  });
+
+  it('a mage cannot burn a bridge out from under a unit', () => {
+    const s = startState([
+      mkUnit({ id: 1, player: 1, type: 'mage', row: 2, col: 2 }),
+      mkUnit({ id: 2, player: 2, type: 'knight', row: 4, col: 4 }),
+    ]);
+    s.terrain = [{ row: 4, col: 4, type: 'bridge' }];
+    const res = applyAction(s, { kind: 'mage-burn-bridge', unitId: 1, row: 4, col: 4 }, mulberry32(1));
+    if (res.ok) throw new Error('expected rejection');
+    expect(res.error.code).toBe('cell-occupied');
+  });
+});
+
+describe('destroyed bridge', () => {
+  it('loot lying on a burned bridge sinks with it', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'mage', row: 2, col: 2 })]);
+    s.terrain = [{ row: 4, col: 4, type: 'bridge' }];
+    s.droppedBackpacks = [
+      { row: 4, col: 4, parts: { ...s.units[0]!.backpack, 'Дерево': 2 }, weapon: null, armorGear: null },
+    ];
+    const res = applyAction(s, { kind: 'mage-burn-bridge', unitId: 1, row: 4, col: 4 }, mulberry32(1));
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    expect(res.value.droppedBackpacks).toHaveLength(0);
+    expect(res.value.terrain).toEqual([{ row: 4, col: 4, type: 'river' }]);
+  });
+});
+
+describe('found gear goes into the right slot', () => {
+  it('buried armour is worn as armour, not as a weapon', () => {
+    const s = createInitialState({
+      mode: 'pvp',
+      seed: 1,
+      units: [
+        mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5 }),
+        mkUnit({ id: 2, player: 2, type: 'knight', row: 15, col: 15 }),
+      ],
+      hiddenPickups: [{ row: 5, col: 6, kind: 'armor', name: 'Кольчуга' }],
+    });
+    const res = applyAction(s, { kind: 'move', unitId: 1, row: 5, col: 6, cost: 1 }, mulberry32(1));
+    if (!res.ok) throw new Error(`expected ok, got ${res.error.code}`);
+    const u = res.value.units.find((x) => x.id === 1)!;
+    expect(u.armorGear?.name).toBe('Кольчуга');
+    expect(u.weapon).toBeNull();
+    expect(u.damage).toBe(UNIT_TYPES.knight.damage);
+    expect(u.maxArmor).toBe(UNIT_TYPES.knight.armor + 2);
+  });
+});
+
+describe('finished match', () => {
+  it('end-turn after the winning move leaves the final state untouched', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'knight' })]);
+    s.winner = 1;
+    const res = applyAction(s, { kind: 'end-turn' }, mulberry32(1));
+    if (!res.ok) throw new Error('end-turn should still be accepted');
+    expect(res.value.currentPlayer).toBe(s.currentPlayer);
+    expect(res.value.turnNumber).toBe(s.turnNumber);
   });
 });

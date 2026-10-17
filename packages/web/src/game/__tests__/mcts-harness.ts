@@ -21,7 +21,7 @@ export type Player = 1 | 2;
 export interface HarnessUnit {
   id: number;
   player: Player;
-  type: 'knight' | 'archer' | 'cavalry' | 'crossbow' | 'catapult';
+  type: 'knight' | 'archer' | 'cavalry' | 'crossbow' | 'catapult' | 'samurai' | 'mage';
   row: number;
   col: number;
   hp: number;
@@ -33,6 +33,10 @@ export interface HarnessUnit {
   maxHp: number;
   maxArmor: number;
   activated: boolean;
+  /** Id of the mage warding this unit (see LightUnit.wardedBy). */
+  wardedBy?: number | null;
+  /** Mage only: energy for absorbing warded hits. */
+  energy?: number;
 }
 
 export interface HarnessState {

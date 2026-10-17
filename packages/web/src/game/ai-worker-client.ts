@@ -13,6 +13,7 @@ import {
   getRuins,
   getRuins2,
   getTerrain,
+  getConstructions,
   getTowers,
 } from '@kc/game-rules';
 import type { AIConfig } from './ai-config.js';
@@ -51,6 +52,7 @@ export function captureLayout(): WorldLayoutSnapshot {
     ruins: { ...getRuins() },
     ruins2: { ...getRuins2() },
     terrain: getTerrain().map((c) => ({ ...c })),
+    constructions: getConstructions().map((c) => ({ ...c })),
   };
 }
 

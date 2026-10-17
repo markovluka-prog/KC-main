@@ -91,7 +91,7 @@ export class Board implements BoardLike {
       // only cleared the flag lazily on their NEXT hit. Clear it here based on
       // hp alone (not `dying`) so it always fires once the mage is dead,
       // however its death was triggered.
-      if (u.type === 'mage' && u.hp <= 0) {
+      if (u.type === 'mage' && (u.hp <= 0 || u.dying)) {
         for (const ally of this.units) {
           if (ally.wardedBy === u.id) ally.wardedBy = null;
         }

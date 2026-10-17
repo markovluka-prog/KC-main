@@ -33,7 +33,7 @@ export interface BeamDifficultyConfig {
     /** Chance of picking a top-3 plan instead of the strict best at each beam step. */
     noise: number;
 }
-export type BeamDifficulty = 'easy' | 'medium' | 'hard' | 'expert';
+export type BeamDifficulty = 'easy' | 'medium' | 'hard' | 'expert' | 'impossible';
 export declare const BEAM_DIFFICULTY: Record<BeamDifficulty, BeamDifficultyConfig>;
 /** Convert a difficulty preset into the options `planTurn` expects. */
 export declare function toBeamOptions(config: BeamDifficultyConfig): BeamSearchOptions;

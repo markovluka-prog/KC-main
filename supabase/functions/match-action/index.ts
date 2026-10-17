@@ -44,6 +44,7 @@ interface MatchRow {
   state: GameState;
   status: string;
   winner: number | null;
+  updated_at: string;
 }
 
 Deno.serve(async (req: Request) => {
@@ -86,7 +87,7 @@ Deno.serve(async (req: Request) => {
     const admin = createClient(supabaseUrl, serviceKey);
     const { data, error } = await admin
       .from('matches')
-      .select('id, player1, player2, state, status, winner')
+      .select('id, player1, player2, state, status, winner, updated_at')
       .eq('id', matchId)
       .maybeSingle();
     if (error || !data) return json({ error: 'match-not-found' }, 404);
@@ -136,7 +137,7 @@ Deno.serve(async (req: Request) => {
       winner = state.winner;
     }
 
-    const { error: upErr } = await admin
+    const { data: updated, error: upErr } = await admin
       .from('matches')
       .update({
         state,
@@ -144,8 +145,14 @@ Deno.serve(async (req: Request) => {
         winner,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      // Compare-and-set: only write over the exact row this batch was applied
+      // to. Two requests racing on one match used to both read the same
+      // state and the later write silently discarded the earlier turn.
+      .eq('updated_at', match.updated_at)
+      .select('id');
     if (upErr) return json({ error: 'write-failed', message: upErr.message }, 500);
+    if (!updated || updated.length === 0) return json({ error: 'stale-state' }, 409);
 
     return json({ ok: true });
   } catch (e) {

@@ -130,7 +130,7 @@ describe('generateActionsForUnit', () => {
     expect(actions.some((a) => a.kind === 'castle-heal')).toBe(false);
   });
 
-  it('offers search-ruins only inside a ruins area', () => {
+  it('never offers search-ruins — ruins hold nothing (client parity)', () => {
     const inRuins = mkUnit({ id: 1, player: 1, type: 'knight', row: 9, col: 9 });
     const state = createInitialState({
       mode: 'pvp',
@@ -139,7 +139,7 @@ describe('generateActionsForUnit', () => {
       ruins: { top: 9, left: 9, width: 2, height: 2 },
     });
     const actions = generateActionsForUnit(state, 1);
-    expect(actions.some((a) => a.kind === 'search-ruins')).toBe(true);
+    expect(actions.some((a) => a.kind === 'search-ruins')).toBe(false);
   });
 
   it('offers craft-armor only once the unit holds enough parts (no tower needed — anyone can craft)', () => {

@@ -52,6 +52,21 @@ export const BEAM_DIFFICULTY = {
         replyCandidates: 16,
         noise: 0,
     },
+    // IMPOSSIBLE: same beam-search algorithm as expert, every knob pushed
+    // further — wider beam (more candidate turn-plans survive each expansion),
+    // wider/deeper opponent-reply lookahead (more finalists get checked against
+    // the opponent's best reply, and that reply search itself considers more
+    // replies). No noise, same as hard/expert. This is the ceiling the plain
+    // dial-turning in this file can reach; it costs more search time per turn,
+    // which is the deliberate tradeoff for a tier that isn't meant to be beaten.
+    impossible: {
+        label: 'Невозможный',
+        beamWidth: 260,
+        reply: true,
+        replyBeamWidth: 14,
+        replyCandidates: 40,
+        noise: 0,
+    },
 };
 /** Convert a difficulty preset into the options `planTurn` expects. */
 export function toBeamOptions(config) {

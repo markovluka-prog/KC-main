@@ -328,3 +328,59 @@ describe('Phase 1.5 S6 — snapshot v3 upgrade', () => {
     expect(out?.ruins).toEqual({ top: 2, left: 2, width: 5, height: 5 });
   });
 });
+
+describe('validateSnapshot — world state that must survive a reload', () => {
+  it('keeps worn armour above base armour', () => {
+    const v = validateSerializedUnit({
+      ...makeSnapshot().units[0],
+      armor: 8,
+      maxArmor: 8,
+      armorGear: { name: 'Латы', icon: 'armor_plate', amount: 4 },
+    });
+    expect(v?.maxArmor).toBe(UNIT_TYPES.knight.armor + 4);
+    expect(v?.armor).toBe(UNIT_TYPES.knight.armor + 4);
+  });
+
+  it('still caps armour without gear and caps max HP at the unit type', () => {
+    const v = validateSerializedUnit({ ...makeSnapshot().units[0], armor: 99, maxArmor: 99, maxHp: 99, hp: 99 });
+    expect(v?.maxArmor).toBe(UNIT_TYPES.knight.armor);
+    expect(v?.maxHp).toBe(UNIT_TYPES.knight.hp);
+  });
+
+  it('keeps constructions (incl. legacy `hp` progress), bridge durability and buried loot', () => {
+    const raw = {
+      ...makeSnapshot(),
+      constructions: [
+        { row: 9, col: 9, kind: 'tower', progress: 2 },
+        { row: 10, col: 9, kind: 'bridge', hp: 2 },
+        { row: 11, col: 9, kind: 'castle', progress: 2 },
+      ],
+      bridgeDurability: { '7,7': 1, 'x': 2 },
+      hiddenPickups: [
+        { row: 4, col: 4, kind: 'part', name: 'Дерево' },
+        { row: 4, col: 5, kind: 'part', name: 'Мусор' },
+      ],
+    };
+    const v = validateSnapshot(raw);
+    expect(v?.constructions).toEqual([
+      { row: 9, col: 9, kind: 'tower', progress: 2 },
+      { row: 10, col: 9, kind: 'bridge', progress: 2 },
+    ]);
+    expect(v?.bridgeDurability).toEqual({ '7,7': 1 });
+    expect(v?.hiddenPickups).toEqual([{ row: 4, col: 4, kind: 'part', name: 'Дерево' }]);
+  });
+
+  it('distinguishes "no buried loot left" from an old save without the field', () => {
+    expect(validateSnapshot({ ...makeSnapshot(), hiddenPickups: [] })?.hiddenPickups).toEqual([]);
+    expect(validateSnapshot(makeSnapshot())?.hiddenPickups).toBeUndefined();
+  });
+});
+
+describe('validateSnapshot — a corpse never shadows a live unit', () => {
+  it('drops dying units so a live unit on the same cell survives the reload', () => {
+    const live = makeSnapshot().units[0]!;
+    const corpse = { ...live, id: 2, hp: 0, dying: true };
+    const v = validateSnapshot({ ...makeSnapshot(), units: [corpse, live] });
+    expect(v?.units.map((u) => u.id)).toEqual([live.id]);
+  });
+});

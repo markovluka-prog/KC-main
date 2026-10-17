@@ -54,7 +54,7 @@ test('board is 40×20 with terrain, units in castle, online room flow', async ({
   console.log('gameState:', JSON.stringify(gameState));
   expect(gameState.cols).toBe(20);
   expect(gameState.rows).toBe(20);
-  expect(gameState.unitCount).toBe(20); // 10 per player
+  expect(gameState.unitCount).toBe(22); // 11 per player (mage joined the base roster)
 
   // ── Units inside castle check ──
   const castleCheck = await page.evaluate(() => {

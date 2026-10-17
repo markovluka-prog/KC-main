@@ -1,4 +1,4 @@
-import type { Backpack, DroppedBackpack, EquippedGear, GameMode, GearSlot, Player, RuinsArea, TowerPosition, UnitTypeKey } from './types.js';
+import type { Backpack, BridgeDurability, Construction, DroppedBackpack, HiddenPickup, EquippedGear, GameMode, GearSlot, Player, RuinsArea, TowerPosition, UnitTypeKey } from './types.js';
 /**
  * Plain JSON-serialisable snapshot of an in-progress match.
  *
@@ -38,6 +38,12 @@ export interface GameSnapshot {
     /** A dead unit's whole backpack (parts + weapon + armour), dropped as one
      * object on its death cell — see [[per-unit-backpack]]. */
     droppedBackpacks: DroppedBackpack[];
+    /** Unfinished tower/bridge sites. Optional: older saves lack it. */
+    constructions?: Construction[];
+    /** Built bridges' remaining hit points, keyed "row,col". */
+    bridgeDurability?: BridgeDurability;
+    /** Buried loot not yet claimed — must survive a reload, or it re-scatters. */
+    hiddenPickups?: HiddenPickup[];
     previewUnitId: number | null;
     selectedUnitId: number | null;
     units: SerializedUnit[];

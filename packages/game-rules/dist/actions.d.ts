@@ -20,14 +20,12 @@
  * silently stalling turn after turn once a hidden pickup got claimed.
  */
 import { type ServerAction } from './apply.js';
-import type { GameState } from './state.js';
-import type { BoardLike, Player } from './types.js';
-/** Adapt a `GameState` snapshot into the `BoardLike` shape `moves.ts` expects. */
-export declare function boardFromState(state: GameState): BoardLike;
+import { type GameState } from './state.js';
+import type { Player } from './types.js';
+export { boardFromState } from './board-state.js';
 /**
  * Every legal action `unit` could take this instant, spanning move, attack,
- * and the economy/support actions (spell/craft/craft-armor/search-ruins/
- * castle-heal). Skips anything the unit can't afford/reach so callers don't
+ * and the economy/support actions (craft/craft-armor/castle-heal/build/mage). Skips anything the unit can't afford/reach so callers don't
  * have to re-derive eligibility — every returned action is expected to
  * succeed if passed straight to `applyAction`.
  *

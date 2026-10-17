@@ -11,8 +11,9 @@
  * Phase 4 (T4.18, hard-cut) will collapse the client onto GameState too.
  */
 import type {
-  ArtifactName,
-  DroppedItem,
+  BridgeDurability,
+  Construction,
+  DroppedBackpack,
   GameMode,
   HiddenPickup,
   Player,
@@ -32,6 +33,11 @@ export interface GameState {
   ruins2?: RuinsArea;
   terrain: readonly TerrainCell[];
 
+  /** Towers/bridges a knight is currently building — see BUILD_WORK_TOTAL. */
+  constructions: Construction[];
+  /** Built bridges' remaining hit points, keyed "row,col" — see BridgeDurability. */
+  bridgeDurability: BridgeDurability;
+
   /** Match flow. */
   currentPlayer: Player;
   turnNumber: number;
@@ -42,7 +48,6 @@ export interface GameState {
   /** Per-player resources. */
   shieldTurns: Record<Player, number>;
   damageBuff: Record<Player, number>;
-  inventory: Record<Player, Record<ArtifactName, number>>;
 
   /**
    * A weapon crafted (or looted from ruins) this turn that still needs to be
@@ -52,11 +57,11 @@ export interface GameState {
   pendingWeaponEquip: SerializedWeaponEquip | null;
 
   /**
-   * Gear dropped on the board when an armed/armoured unit was killed. Any unit
-   * moving onto a dropped item's cell auto-equips it (matching slot + type),
-   * so this is deterministic and replay-safe.
+   * A dead unit's whole backpack (weapon parts + weapon + armour), dropped as
+   * one object on its death cell. Any of its allies moving onto that cell
+   * picks up everything at once — see [[per-unit-backpack]].
    */
-  droppedItems: DroppedItem[];
+  droppedBackpacks: DroppedBackpack[];
 
   /**
    * Hidden artifacts/weapons/armour buried across the board at setup. Invisible
@@ -89,12 +94,3 @@ export const RULES_VERSION = 1;
 /** Max distinct units a player may activate (act with) in a single turn.
  * Mirrors the web client's `maxActivatedPerTurn`. */
 export const MAX_ACTIVATIONS_PER_TURN = 3;
-
-/** Empty inventory shape for the artifact accumulator. */
-export function emptyInventoryFor(
-  artifacts: readonly ArtifactName[],
-): Record<ArtifactName, number> {
-  const inv = {} as Record<ArtifactName, number>;
-  for (const a of artifacts) inv[a] = 0;
-  return inv;
-}

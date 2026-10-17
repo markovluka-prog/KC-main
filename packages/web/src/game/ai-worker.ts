@@ -20,6 +20,7 @@ import {
   setRuins,
   setRuins2,
   setTerrain,
+  setConstructions,
   setTowers,
 } from '@kc/game-rules';
 import { AIPlayer, type AIGameAPI } from './ai.js';
@@ -106,6 +107,7 @@ function handleSearch(req: SearchRequest): void {
   setRuins(req.layout.ruins);
   setRuins2(req.layout.ruins2);
   setTerrain(req.layout.terrain);
+  setConstructions(req.layout.constructions ?? []);
 
   const ai = new AIPlayer(
     makeWorkerGame(req.player1Bottom, req.maxActivatedPerTurn),
@@ -116,7 +118,14 @@ function handleSearch(req: SearchRequest): void {
 
   const internals = ai as any;
   // Feed the search the transferred position instead of the (empty) stub board.
-  internals.createLightState = (): WorkerState => structuredClone(req.state);
+  // A sender that omits the activation budget (older callers, tests) must not
+  // leave the search with zero activations — that silently yields an empty plan.
+  const state = structuredClone(req.state);
+  if (typeof state.activationsLeft !== 'number') {
+    state.activationsLeft = req.maxActivatedPerTurn ?? 3;
+  }
+  if (!state.inventory) state.inventory = {};
+  internals.createLightState = (): WorkerState => structuredClone(state);
 
   // Drive the search in slices so progress can be reported. Slices no longer
   // exist to keep a UI responsive — the whole worker is off the main thread —

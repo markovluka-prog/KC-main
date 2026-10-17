@@ -297,7 +297,7 @@ test.describe('In-game sidebar (нижняя панель на мобильно�
     );
   });
 
-  test('Кнопки управления видны и ≥ 44px: В меню, Пропустить ход, Угрозы', async ({ page }) => {
+  test('Кнопки управления видны и ≥ 44px: В меню, Пропустить ход', async ({ page }) => {
     await waitForMenu(page);
     await startPvP(page);
 
@@ -309,23 +309,7 @@ test.describe('In-game sidebar (нижняя панель на мобильно�
       page.locator('#sidebar button[data-action="end-turn"]').first(),
       'Пропустить ход',
     );
-    await assertTappable(
-      page.locator('#sidebar button[data-action="toggle-threat"]').first(),
-      'Угрозы',
-    );
-  });
-
-  test('Кнопка «Угрозы» — toggle меняет текст', async ({ page }) => {
-    await waitForMenu(page);
-    await startPvP(page);
-
-    const btn = page.locator('#sidebar button[data-action="toggle-threat"]').first();
-    await expect(btn).toContainText(/выкл/i);
-    await btn.click();
-    await expect(btn).toContainText(/вкл/i);
-    // Второй клик возвращает
-    await btn.click();
-    await expect(btn).toContainText(/выкл/i);
+    // The «Угрозы» toggle was removed on purpose: tapping an enemy shows its reach.
   });
 
   test('Кнопка «Сдаться» видна и ≥ 44px', async ({ page }) => {

@@ -110,6 +110,17 @@ export type ServerAction = {
     kind: 'mage-heal';
     unitId: number;
     targetUnitId: number;
+}
+/**
+ * Catapult boulder: 1 move, same manhattan range as its shot. An empty
+ * legal cell becomes impassable `rock`; aiming at an existing rock shatters
+ * it back to open ground. See rockTargetAllowed for the forbidden cells.
+ */
+ | {
+    kind: 'throw-rock';
+    unitId: number;
+    row: number;
+    col: number;
 } | {
     kind: 'build-tower';
     unitId: number;
@@ -128,7 +139,7 @@ export interface ValidationError {
 }
 export interface GameEvent {
     /** Description of what happened — for UI animation triggers. */
-    kind: 'unit-moved' | 'unit-attacked' | 'unit-killed' | 'turn-ended' | 'match-finished' | 'weapon-crafted' | 'weapon-equipped' | 'ruins-searched' | 'castle-healed' | 'items-transferred' | 'mage-attacked' | 'mage-warded' | 'mage-drained' | 'mage-healed' | 'mage-died-overdrawn' | 'bridge-burned' | 'tower-built' | 'bridge-built'
+    kind: 'unit-moved' | 'unit-attacked' | 'unit-killed' | 'turn-ended' | 'match-finished' | 'weapon-crafted' | 'weapon-equipped' | 'ruins-searched' | 'castle-healed' | 'items-transferred' | 'mage-attacked' | 'mage-warded' | 'mage-drained' | 'mage-healed' | 'mage-died-overdrawn' | 'bridge-burned' | 'tower-built' | 'bridge-built' | 'rock-thrown' | 'rock-shattered'
     /** A unit stepped onto a buried weapon part. */
      | 'part-found'
     /** A unit stepped onto buried gear it can't wear; an ally must equip it. */
@@ -205,5 +216,18 @@ export declare function occupiesEnemyCastle(state: GameState, player: Player): b
  * Symmetric with `AIPlayer.applyEndOfTurn` in packages/web/src/game/ai.ts.
  */
 export declare function endTurn(state: GameState): GameState;
+/**
+ * True when (row,col) lies in a castle footprint or the approach strip in
+ * front of its gate — the band where a catapult may not drop a boulder.
+ * Orientation-free (both ends of the board are covered), so the client can
+ * use it on its physical board unchanged.
+ */
+export declare function isRockForbiddenZone(row: number, col: number, castleCols: readonly number[]): boolean;
+/**
+ * Whether a catapult may aim a boulder at (row,col): empty ground (or an
+ * existing rock, which it shatters), never a unit, tower, river, bridge,
+ * mountain, construction site, dropped loot, or the castle approach zone.
+ */
+export declare function rockTargetAllowed(state: GameState, row: number, col: number): boolean;
 export {};
 //# sourceMappingURL=apply.d.ts.map

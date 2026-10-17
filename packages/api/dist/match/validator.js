@@ -73,16 +73,30 @@ const MageAttackAction = z.object({
     unitId: z.number().int().nonnegative(),
     targetRow: z.number().int().nonnegative().max(19),
     targetCol: z.number().int().nonnegative().max(19),
+    // Player-chosen damage. Missing from the schema, zod stripped it and the
+    // reducer rejected every online mage attack ("damage must be positive").
+    damage: z.number().int().positive().max(40),
 });
 const MageWardAction = z.object({
     kind: z.literal('mage-ward'),
     unitId: z.number().int().nonnegative(),
-    wardUnitIds: z.array(z.number().int().nonnegative()).max(20),
+    toggleUnitIds: z.array(z.number().int().nonnegative()).max(20),
 });
 const MageDrainAction = z.object({
     kind: z.literal('mage-drain'),
     unitId: z.number().int().nonnegative(),
     targetUnitId: z.number().int().nonnegative(),
+});
+const MageHealAction = z.object({
+    kind: z.literal('mage-heal'),
+    unitId: z.number().int().nonnegative(),
+    targetUnitId: z.number().int().nonnegative(),
+});
+const ThrowRockAction = z.object({
+    kind: z.literal('throw-rock'),
+    unitId: z.number().int().nonnegative(),
+    row: z.number().int().nonnegative().max(19),
+    col: z.number().int().nonnegative().max(19),
 });
 const MageBurnBridgeAction = z.object({
     kind: z.literal('mage-burn-bridge'),
@@ -118,6 +132,10 @@ export const ServerActionSchema = z.discriminatedUnion('kind', [
     MageWardAction,
     MageDrainAction,
     MageBurnBridgeAction,
+    // Both used to be missing, so a heal or a boulder played online was
+    // rejected by the server while the client had already applied it.
+    MageHealAction,
+    ThrowRockAction,
     BuildTowerAction,
     BuildBridgeAction,
 ]);

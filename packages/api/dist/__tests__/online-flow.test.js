@@ -95,7 +95,7 @@ describe('online flow (HTTP + WebSocket, 2 guests)', () => {
         await wsA.opened;
         const firstA = await wsA.waitFor((m) => m.type === 'state-update');
         expect(firstA.status).toBe('waiting');
-        expect(firstA.state.units).toHaveLength(20);
+        expect(firstA.state.units).toHaveLength(22);
         expect(firstA.you).toBe(1);
         const join = await post('/api/lobby/room/join', tokenB, { code });
         expect(join.status).toBe(200);

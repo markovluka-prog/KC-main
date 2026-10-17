@@ -15,7 +15,7 @@
  */
 import { COLS, HIDDEN_PICKUP_SPAWN, ROWS } from './constants.ts';
 import type { Rng } from './rng.ts';
-import type { HiddenPickup, TowerPosition } from './types.ts';
+import type { HiddenPickup, TerrainCell, TowerPosition } from './types.ts';
 
 /** Castle footprint depth (rows) at each end of the board, per setup.ts. */
 const CASTLE_ROWS = 5;
@@ -28,11 +28,17 @@ export interface ScatterOptions {
   towers: readonly TowerPosition[];
   /** Cells of the starting roster — knights and friends must not sit on loot. */
   occupied: readonly { row: number; col: number }[];
+  /**
+   * Map terrain. Anything a unit can't stand on (river, mountain, rock) is
+   * excluded — loot buried there would be unreachable forever. Bridges stay
+   * eligible since units walk across them.
+   */
+  terrain?: readonly TerrainCell[];
 }
 
 /**
  * Cells that may never hold a hidden pickup: both castle zones, every tower,
- * and every starting unit's cell.
+ * every starting unit's cell, and every impassable terrain feature.
  */
 export function buildExcludedCells(opts: ScatterOptions): Set<string> {
   const excluded = new Set<string>();
@@ -49,6 +55,13 @@ export function buildExcludedCells(opts: ScatterOptions): Set<string> {
 
   for (const t of opts.towers) excluded.add(`${t.row},${t.col}`);
   for (const u of opts.occupied) excluded.add(`${u.row},${u.col}`);
+
+  // Impassable ground: a pickup there could never be collected.
+  for (const t of opts.terrain ?? []) {
+    if (t.type === 'river' || t.type === 'mountain' || t.type === 'rock') {
+      excluded.add(`${t.row},${t.col}`);
+    }
+  }
 
   return excluded;
 }

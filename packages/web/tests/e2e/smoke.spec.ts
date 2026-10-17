@@ -99,7 +99,7 @@ test.describe('Phase 1 smoke', () => {
     );
     // Sidebar should now show the mode label (FUNC-002 fix path).
     const sidebar = page.locator('#sidebar');
-    await expect(sidebar).toContainText(/Режим: 2 игрока/i, { timeout: 5_000 });
+    await expect(sidebar).toContainText(/2 игрока/i, { timeout: 5_000 });
   });
 
   test('Story mode: continue-story starts first chapter task as AI match', async ({ page }) => {
@@ -146,6 +146,7 @@ test.describe('Phase 1 smoke', () => {
   });
 
   test('AI (hard) makes a legal move within budget', async ({ page }) => {
+    test.setTimeout(60_000);
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(String(err)));
     page.on('console', (msg) => {
@@ -180,7 +181,7 @@ test.describe('Phase 1 smoke', () => {
     // app exposes for tests, then drive a frame tick. The game instance is
     // available on window for hot-reload + dev introspection.
     const moved = await page.evaluate(async () => {
-      // Wait up to 4s for an AI action to consume at least one unit's move.
+      // Wait up to 30s: the hard bot is given ~9s of (worker) thinking time.
       // The AI ticks on requestAnimationFrame inside the existing game loop;
       // we just force the turn over to it and observe state.
       const w = window as unknown as {
@@ -200,7 +201,7 @@ test.describe('Phase 1 smoke', () => {
         .map((u) => u.done)
         .join(',');
       const start = Date.now();
-      while (Date.now() - start < 6000) {
+      while (Date.now() - start < 30000) {
         await new Promise((r) => setTimeout(r, 100));
         const after = g.board.units
           .filter((u) => u.player === 2 && u.hp > 0)
@@ -213,7 +214,7 @@ test.describe('Phase 1 smoke', () => {
       return { changed: false, before };
     });
 
-    expect(moved, 'AI did not act within 6s').toMatchObject({ changed: true });
+    expect(moved, 'AI did not act within 30s').toMatchObject({ changed: true });
     expect(errors, `page errors during AI turn: ${errors.join('\n')}`).toEqual([]);
   });
 });

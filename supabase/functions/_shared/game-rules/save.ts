@@ -1,19 +1,30 @@
 // AUTO-VENDORED from packages/game-rules/src/save.ts — DO NOT EDIT BY HAND.
 // Edit the source and re-run scripts/vendor-game-rules.sh.
 import {
-  ARTIFACTS,
+  ARMORS,
+  BUILD_WORK_TOTAL,
+  BRIDGE_MAX_DURABILITY,
   COLS,
   DEFAULT_RUINS,
   DEFAULT_TOWERS,
+  MAGE_MAX_ENERGY,
+  PARTS,
   SAVE_VERSION,
   UNIT_TYPES,
+  emptyBackpack,
 } from './constants.ts';
 import { insideBoard } from './board.ts';
 import type {
-  ArtifactName,
-  DroppedItem,
+  Backpack,
+  BridgeDurability,
+  Construction,
+  DroppedBackpack,
+  HiddenPickup,
+  EquippedGear,
   GameMode,
+  GearItem,
   GearSlot,
+  PartName,
   Player,
   RuinsArea,
   TowerPosition,
@@ -52,11 +63,17 @@ export interface GameSnapshot {
   shieldTurns: Record<Player, number>;
   damageBuff: Record<Player, number>;
   pendingWeaponEquip: SerializedWeaponEquip | null;
-  /** Gear lying on the board after its bearer died (drop/pickup feature). */
-  droppedItems: DroppedItem[];
+  /** A dead unit's whole backpack (parts + weapon + armour), dropped as one
+   * object on its death cell — see [[per-unit-backpack]]. */
+  droppedBackpacks: DroppedBackpack[];
+  /** Unfinished tower/bridge sites. Optional: older saves lack it. */
+  constructions?: Construction[];
+  /** Built bridges' remaining hit points, keyed "row,col". */
+  bridgeDurability?: BridgeDurability;
+  /** Buried loot not yet claimed — must survive a reload, or it re-scatters. */
+  hiddenPickups?: HiddenPickup[];
   previewUnitId: number | null;
   selectedUnitId: number | null;
-  inventory: Record<Player, Record<ArtifactName, number>>;
   units: SerializedUnit[];
 
   // FUNC-001 fix — AI / story restoration fields.
@@ -99,9 +116,26 @@ export interface SerializedUnit {
   visualCol: number | null;
   dying: boolean;
   deathProgress: number;
-  weapon: { name: string; icon: string; amount: number } | null;
+  weapon: EquippedGear | null;
   /** Equipped armour piece (drop/pickup + restoration accounting). */
-  armorGear: { name: string; icon: string; amount: number } | null;
+  armorGear: EquippedGear | null;
+  /** This unit's own carry of weapon parts — no shared per-player pool any more. */
+  backpack: Backpack;
+  /** Mage only: current/max energy for its 4 abilities. Absent on every other type. */
+  energy?: number;
+  maxEnergy?: number;
+  /** Mage only: unit ids this mage is currently warding (see mage-ward action). */
+  warding?: number[];
+  /**
+   * Any unit (not just a mage): the id of the living mage currently shielding
+   * it, if any. Set/cleared in bulk by mage-ward (multi-select toggle, 1 move
+   * total regardless of how many units are toggled). A warded unit takes ZERO
+   * damage from a hit — the hit is instead converted to
+   * floor(damage / MAGE_WARD_ENERGY_PER_DAMAGE) energy drained from the
+   * warding mage; if the mage doesn't have enough energy to cover it, the
+   * MAGE dies (not the warded unit, and not a partial absorb).
+   */
+  wardedBy?: number | null;
 }
 
 export interface SerializedStoryTask {
@@ -119,6 +153,9 @@ export interface SerializedStoryTask {
  * Real anti-cheat lands in Phase 4 (server-authoritative state).
  */
 export const DESERIALIZED_DAMAGE_BUFF_CAP = 10;
+
+/** Largest armour bonus any single armour piece can give. */
+const MAX_ARMOR_GEAR_AMOUNT = Math.max(0, ...ARMORS.map((a) => a.amount));
 
 function toPlayer(value: unknown): Player {
   return value === 2 ? 2 : 1;
@@ -145,7 +182,19 @@ const UNIT_TYPE_KEYS = new Set<UnitTypeKey>([
   'catapult',
   'crossbow',
   'samurai',
+  'mage',
 ]);
+
+function toBackpack(raw: unknown): Backpack {
+  const b = emptyBackpack();
+  if (!raw || typeof raw !== 'object') return b;
+  const r = raw as Record<string, unknown>;
+  for (const p of PARTS) {
+    const n = Number(r[p]);
+    if (Number.isFinite(n) && n >= 0) b[p] = Math.floor(n);
+  }
+  return b;
+}
 
 function isUnitType(value: unknown): value is UnitTypeKey {
   return typeof value === 'string' && UNIT_TYPE_KEYS.has(value as UnitTypeKey);
@@ -179,11 +228,13 @@ export function validateSerializedUnit(raw: unknown): SerializedUnit | null {
   const baseDamage = UNIT_TYPES[r.type].damage;
   const damageCeiling = baseDamage + DESERIALIZED_DAMAGE_BUFF_CAP;
 
-  const maxHp = Math.max(1, toFiniteInt(r.maxHp, UNIT_TYPES[r.type].hp));
+  // Nothing in the game raises max HP or base armour, so both are capped at
+  // the unit type's own stats (tamper guard, same spirit as the damage cap).
+  const baseHp = UNIT_TYPES[r.type].hp;
+  const maxHp = Math.max(1, Math.min(baseHp, toFiniteInt(r.maxHp, baseHp)));
   const hp = Math.max(0, Math.min(maxHp, toFiniteInt(r.hp, maxHp)));
-  const startArmor = Math.max(0, toFiniteInt(r.startArmor, UNIT_TYPES[r.type].armor));
-  const maxArmor = Math.max(0, Math.min(startArmor, toFiniteInt(r.maxArmor, startArmor)));
-  const armor = Math.max(0, Math.min(maxArmor, toFiniteInt(r.armor, maxArmor)));
+  const baseArmor = UNIT_TYPES[r.type].armor;
+  const startArmor = Math.max(0, Math.min(baseArmor, toFiniteInt(r.startArmor, baseArmor)));
   // T25 P1: cap damage to prevent localStorage tampering.
   const damage = Math.max(0, Math.min(damageCeiling, toFiniteInt(r.damage, baseDamage)));
   const maxMoves = Math.max(1, toFiniteInt(r.maxMoves, UNIT_TYPES[r.type].moves));
@@ -205,11 +256,16 @@ export function validateSerializedUnit(raw: unknown): SerializedUnit | null {
     armorGear = {
       name: toString(a.name),
       icon: toString(a.icon),
-      amount: Math.max(0, toFiniteInt(a.amount, 0)),
+      amount: Math.max(0, Math.min(MAX_ARMOR_GEAR_AMOUNT, toFiniteInt(a.amount, 0))),
     };
   }
+  // Worn armour raises maxArmor above startArmor (see equipGearToUnit) — the
+  // cap used to be startArmor alone, so every reload stripped the bonus off.
+  const armorCeiling = startArmor + (armorGear ? armorGear.amount : 0);
+  const maxArmor = Math.max(0, Math.min(armorCeiling, toFiniteInt(r.maxArmor, armorCeiling)));
+  const armor = Math.max(0, Math.min(maxArmor, toFiniteInt(r.armor, maxArmor)));
 
-  return {
+  const unit: SerializedUnit = {
     id,
     player,
     type: r.type,
@@ -237,7 +293,22 @@ export function validateSerializedUnit(raw: unknown): SerializedUnit | null {
     deathProgress: Math.max(0, toFiniteInt(r.deathProgress, 0)),
     weapon,
     armorGear,
+    backpack: toBackpack(r.backpack),
   };
+
+  if (r.type === 'mage') {
+    const maxEnergy = Math.max(1, toFiniteInt(r.maxEnergy, MAGE_MAX_ENERGY));
+    unit.maxEnergy = maxEnergy;
+    unit.energy = Math.max(0, Math.min(maxEnergy, toFiniteInt(r.energy, maxEnergy)));
+    unit.warding = Array.isArray(r.warding)
+      ? r.warding.filter((x): x is number => Number.isFinite(Number(x))).map(Number)
+      : [];
+  }
+  // wardedBy: any unit type can be on the receiving end of a mage's shield.
+  const wardedByRaw = toFiniteInt(r.wardedBy, 0);
+  unit.wardedBy = wardedByRaw > 0 ? wardedByRaw : null;
+
+  return unit;
 }
 
 function validatePendingWeaponEquip(raw: unknown): SerializedWeaponEquip | null {
@@ -257,27 +328,85 @@ function validatePendingWeaponEquip(raw: unknown): SerializedWeaponEquip | null 
   };
 }
 
-function validateDroppedItems(raw: unknown): DroppedItem[] {
+function validateGearItem(raw: unknown): GearItem | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.name !== 'string') return null;
+  return {
+    name: r.name,
+    amount: Math.max(0, toFiniteInt(r.amount, 0)),
+    icon: toString(r.icon),
+    allowedTypes: normaliseUnitTypes(r.allowedTypes),
+    forbidTypes: normaliseUnitTypes(r.forbidTypes),
+    archerOnly: toBool(r.archerOnly),
+  };
+}
+
+function validateDroppedBackpacks(raw: unknown): DroppedBackpack[] {
   if (!Array.isArray(raw)) return [];
-  const out: DroppedItem[] = [];
+  const out: DroppedBackpack[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
     const r = item as Record<string, unknown>;
-    if (typeof r.name !== 'string') continue;
     const row = toFiniteInt(r.row, -1);
     const col = toFiniteInt(r.col, -1);
     if (!insideBoard(row, col)) continue;
     out.push({
       row,
       col,
-      slot: r.slot === 'armor' ? 'armor' : 'weapon',
-      name: r.name,
-      amount: Math.max(0, toFiniteInt(r.amount, 0)),
-      icon: toString(r.icon),
-      allowedTypes: normaliseUnitTypes(r.allowedTypes),
-      forbidTypes: normaliseUnitTypes(r.forbidTypes),
-      archerOnly: toBool(r.archerOnly),
+      parts: toBackpack(r.parts),
+      weapon: validateGearItem(r.weapon),
+      armorGear: validateGearItem(r.armorGear),
     });
+  }
+  return out;
+}
+
+function validateConstructions(raw: unknown): Construction[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Construction[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const row = toFiniteInt(r.row, -1);
+    const col = toFiniteInt(r.col, -1);
+    if (!insideBoard(row, col)) continue;
+    if (r.kind !== 'tower' && r.kind !== 'bridge') continue;
+    // Older web saves stored progress as `hp`.
+    const progress = toFiniteInt(r.progress ?? r.hp, 0);
+    if (progress <= 0 || progress >= BUILD_WORK_TOTAL) continue;
+    out.push({ row, col, kind: r.kind, progress });
+  }
+  return out;
+}
+
+function validateBridgeDurability(raw: unknown): BridgeDurability {
+  const out: BridgeDurability = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const m = /^(\d+),(\d+)$/.exec(key);
+    if (!m || !insideBoard(Number(m[1]), Number(m[2]))) continue;
+    const hp = toFiniteInt(value, 0);
+    if (hp > 0) out[key] = Math.min(BRIDGE_MAX_DURABILITY, hp);
+  }
+  return out;
+}
+
+function validateHiddenPickups(raw: unknown): HiddenPickup[] | undefined {
+  // Absent ⇒ undefined (an old save), so the client knows to scatter fresh
+  // loot; an empty array means "everything was already claimed".
+  if (!Array.isArray(raw)) return undefined;
+  const out: HiddenPickup[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const row = toFiniteInt(r.row, -1);
+    const col = toFiniteInt(r.col, -1);
+    if (!insideBoard(row, col)) continue;
+    if (r.kind !== 'part' && r.kind !== 'weapon' && r.kind !== 'armor') continue;
+    if (typeof r.name !== 'string') continue;
+    if (r.kind === 'part' && !PARTS.includes(r.name as PartName)) continue;
+    out.push({ row, col, kind: r.kind, name: r.name });
   }
   return out;
 }
@@ -290,23 +419,6 @@ function validateStoryTask(raw: unknown): SerializedStoryTask | null {
   const ti = toFiniteInt(r.ti, -1);
   if (ci < 0 || gi < 0 || ti < 0) return null;
   return { ci, gi, ti };
-}
-
-function emptyInventory(): Record<ArtifactName, number> {
-  const inv = {} as Record<ArtifactName, number>;
-  for (const a of ARTIFACTS) inv[a] = 0;
-  return inv;
-}
-
-function validateInventory(raw: unknown): Record<ArtifactName, number> {
-  const inv = emptyInventory();
-  if (!raw || typeof raw !== 'object') return inv;
-  const r = raw as Record<string, unknown>;
-  for (const a of ARTIFACTS) {
-    const n = Number(r[a]);
-    if (Number.isFinite(n) && n >= 0) inv[a] = Math.floor(n);
-  }
-  return inv;
 }
 
 function validateTowers(raw: unknown): TowerPosition[] {
@@ -362,11 +474,12 @@ function validateTerrain(raw: unknown): { row: number; col: number; type: string
  * Type-guard / sanitiser for a snapshot pulled from localStorage. Returns
  * `null` if the structure or version cannot be trusted.
  *
- * Accepts the current `SAVE_VERSION` AND the immediately-previous `v2` — for
- * v2 we fill in `towers` / `ruins` from defaults so an in-progress match
- * survives the upgrade. (Phase 1.5 S6.)
+ * Only the current `SAVE_VERSION` is accepted — v4's per-unit backpacks and
+ * removal of the shared artifact inventory are structurally incompatible
+ * with v3, so an old in-progress save is simply dropped rather than
+ * partially migrated (screen falls back to the menu; nothing crashes).
  */
-const SUPPORTED_VERSIONS = new Set([SAVE_VERSION, SAVE_VERSION - 1]);
+const SUPPORTED_VERSIONS = new Set([SAVE_VERSION]);
 
 export function validateSnapshot(raw: unknown): GameSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -384,6 +497,9 @@ export function validateSnapshot(raw: unknown): GameSnapshot | null {
   for (const u of unitsRaw) {
     const v = validateSerializedUnit(u);
     if (!v) continue;
+    // Dead/dying units carry nothing a resumed game needs, and keeping one
+    // could shadow a live unit standing on the same cell (first wins below).
+    if (v.hp <= 0 || v.dying) continue;
     const key = v.row + ',' + v.col;
     if (occupied.has(key)) continue;
     occupied.add(key);
@@ -394,7 +510,6 @@ export function validateSnapshot(raw: unknown): GameSnapshot | null {
   const shield = (r.shieldTurns as Record<string, unknown>) ?? {};
   const buff = (r.damageBuff as Record<string, unknown>) ?? {};
   const sessionRaw = (r.sessionWins as Record<string, unknown>) ?? {};
-  const inventoryRaw = (r.inventory as Record<string, unknown>) ?? {};
 
   return {
     version: SAVE_VERSION,
@@ -422,13 +537,12 @@ export function validateSnapshot(raw: unknown): GameSnapshot | null {
       2: Math.max(0, toFiniteInt(buff[2], 0)),
     },
     pendingWeaponEquip: validatePendingWeaponEquip(r.pendingWeaponEquip),
-    droppedItems: validateDroppedItems(r.droppedItems),
+    droppedBackpacks: validateDroppedBackpacks(r.droppedBackpacks),
+    constructions: validateConstructions(r.constructions),
+    bridgeDurability: validateBridgeDurability(r.bridgeDurability),
+    hiddenPickups: validateHiddenPickups(r.hiddenPickups),
     previewUnitId: Number.isFinite(Number(r.previewUnitId)) ? Number(r.previewUnitId) : null,
     selectedUnitId: Number.isFinite(Number(r.selectedUnitId)) ? Number(r.selectedUnitId) : null,
-    inventory: {
-      1: validateInventory((inventoryRaw as Record<string, unknown>)[1]),
-      2: validateInventory((inventoryRaw as Record<string, unknown>)[2]),
-    },
     units,
 
     // FUNC-001 fix: AI/story state.
@@ -462,9 +576,8 @@ export function snapshotToState(snapshot: GameSnapshot): {
   mode: GameMode;
   shieldTurns: Record<Player, number>;
   damageBuff: Record<Player, number>;
-  inventory: Record<Player, Record<ArtifactName, number>>;
   units: SerializedUnit[];
-  droppedItems: DroppedItem[];
+  droppedBackpacks: DroppedBackpack[];
 } {
   return {
     castleP1Col: snapshot.castleP1Col,
@@ -479,16 +592,19 @@ export function snapshotToState(snapshot: GameSnapshot): {
     mode: snapshot.mode,
     shieldTurns: { ...snapshot.shieldTurns },
     damageBuff: { ...snapshot.damageBuff },
-    inventory: {
-      1: { ...snapshot.inventory[1] },
-      2: { ...snapshot.inventory[2] },
-    },
     units: snapshot.units.map((u) => ({
       ...u,
       weapon: u.weapon ? { ...u.weapon } : null,
       armorGear: u.armorGear ? { ...u.armorGear } : null,
+      backpack: { ...u.backpack },
+      warding: u.warding ? [...u.warding] : undefined,
     })),
-    droppedItems: snapshot.droppedItems.map((d) => ({ ...d })),
+    droppedBackpacks: snapshot.droppedBackpacks.map((d) => ({
+      ...d,
+      parts: { ...d.parts },
+      weapon: d.weapon ? { ...d.weapon } : null,
+      armorGear: d.armorGear ? { ...d.armorGear } : null,
+    })),
   };
 }
 

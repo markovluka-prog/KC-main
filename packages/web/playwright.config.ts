@@ -17,6 +17,9 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL: 'http://localhost:5173',
+    // The UI picks its language from navigator.language; the specs assert the
+    // Russian UI, so pin it instead of inheriting the host's (often en-US).
+    locale: 'ru-RU',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

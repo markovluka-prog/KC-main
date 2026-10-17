@@ -1,10 +1,9 @@
 // AUTO-VENDORED from packages/game-rules/src/constants.ts — DO NOT EDIT BY HAND.
 // Edit the source and re-run scripts/vendor-game-rules.sh.
 import type {
-  ArtifactName,
   LootEntry,
+  PartName,
   RuinsArea,
-  Spell,
   StartPosition,
   TowerPosition,
   UnitTypes,
@@ -30,72 +29,127 @@ export const ARCHER_SQUARE_RADIUS_TOWER = Math.round(
 );
 
 export const SAVE_KEY = 'knights_and_castles_save_v1';
-export const SAVE_VERSION = 3;
+// v4: per-unit backpacks replace the shared artifact inventory, common spells
+// are gone, and the mage's energy/warding fields appear on SerializedUnit.
+export const SAVE_VERSION = 4;
 
-export const ARTIFACTS: readonly ArtifactName[] = [
-  'Трава С.',
-  'Посох огня',
-  'Волшебная палочка',
-  'Солнечные часы',
-  'Вода серебряных трав',
-] as const;
+/**
+ * Mage energy — its own resource, separate from movesLeft. Every one of its
+ * 4 abilities (attack/ward/burn-bridge/heal) costs exactly 1 move but ALSO an
+ * energy amount that scales with what it's doing (see apply.ts's mage-*
+ * actions). Regenerates +5 at the start of the mage's own turn.
+ */
+export const MAGE_MAX_ENERGY = 20;
+export const MAGE_ENERGY_REGEN_PER_TURN = 5;
+/**
+ * Mage attack: the player picks how much damage to deal (>=1) — no longer a
+ * fixed amount. Cost = chosenDamage * MAGE_ATTACK_ENERGY_PER_HP + distance *
+ * MAGE_ATTACK_ENERGY_PER_CELL, same "1 energy per point, plus distance"
+ * shape as mage-heal. MAGE_ATTACK_DAMAGE is kept only as a UI default.
+ */
+export const MAGE_ATTACK_DAMAGE = 5;
+export const MAGE_ATTACK_ENERGY_PER_HP = 1;
+export const MAGE_ATTACK_ENERGY_PER_CELL = 1;
+/**
+ * Ward: 1-to-1 — absorbing a hit costs the warding mage exactly that many
+ * energy points (5 damage absorbed → 5 energy spent). See
+ * [[kc-mage-ward-mechanic]] and apply.ts's absorbWithWard.
+ */
+export const MAGE_WARD_ENERGY_PER_DAMAGE = 1;
+/** Draining an ally/unwarded enemy standing adjacent: 1 HP taken → this much energy gained. */
+export const MAGE_DRAIN_ENERGY_PER_HP = 5;
+/** Burning a bridge: energy cost = Chebyshev distance × this factor. Any distance, one shot destroys it outright. */
+export const MAGE_BURN_BRIDGE_ENERGY_PER_CELL = 2;
+/**
+ * Heal: restores HP to one unit (self or an ally) at any Chebyshev distance.
+ * Base cost is 1 energy per HP restored (1 HP = 1 energy); range then adds
+ * its own cost on top, same shape as mage-attack/mage-burn-bridge — 1 energy
+ * per cell of Chebyshev distance to the target. A mage standing next to its
+ * target (distance 1) pays only the HP cost; healing from across the board
+ * costs steadily more on top of that, so distance always matters.
+ */
+export const MAGE_HEAL_ENERGY_PER_HP = 1;
+export const MAGE_HEAL_ENERGY_PER_CELL = 1;
 
-export const ARTIFACT_COLORS: Record<ArtifactName, string> = {
-  'Трава С.': '#8fdd7f',
-  'Посох огня': '#ff8d62',
-  'Волшебная палочка': '#dfb2ff',
-  'Солнечные часы': '#ffe281',
-  'Вода серебряных трав': '#85c9ff',
+/**
+ * Building a tower or bridge: a knight stands still and spends ALL its
+ * movesLeft on the site each of its own turns. Total work needed to finish
+ * ("4 work units, 2 turns of a 2-move knight") — see BUILD_COST_PER_TURN,
+ * the per-activation cost this action deducts.
+ */
+export const BUILD_WORK_TOTAL = 4;
+/** Building a knight's own moves cost per turn — matches UNIT_TYPES.knight.moves. */
+export const BUILD_COST_PER_TURN = 2;
+/** A freshly built (or map-generated, if any ever are) bridge's starting durability. */
+export const BRIDGE_MAX_DURABILITY = 2;
+
+/** Weapon parts — the crafting currency, replacing the old artifact set. */
+export const PARTS: readonly PartName[] = ['Металл', 'Амулет', 'Рубин', 'Дерево', 'Стрелы'] as const;
+
+export const PART_COLORS: Record<PartName, string> = {
+  'Металл': '#b9c2cc',
+  'Амулет': '#dfb2ff',
+  'Рубин': '#ff5f6d',
+  'Дерево': '#a9784a',
+  'Стрелы': '#8fdd7f',
 };
 
-export const ARTIFACT_IMAGES: Record<ArtifactName, string> = {
-  'Трава С.': 'artifact_grass',
-  'Посох огня': 'artifact_fire_staff',
-  'Волшебная палочка': 'artifact_wand',
-  'Солнечные часы': 'artifact_sundial',
-  'Вода серебряных трав': 'artifact_silver_water',
+export const PART_IMAGES: Record<PartName, string> = {
+  'Металл': 'part_metal',
+  'Амулет': 'part_amulet',
+  'Рубин': 'part_ruby',
+  'Дерево': 'part_wood',
+  'Стрелы': 'part_arrows',
 };
+
+/** A fresh, all-zero backpack — every unit starts carrying no parts. */
+export function emptyBackpack(): Record<PartName, number> {
+  const b = {} as Record<PartName, number>;
+  for (const p of PARTS) b[p] = 0;
+  return b;
+}
 
 /**
  * Hidden-pickup scatter. Replaces the old searchable ruins: at match setup each
  * entry is buried on its own share of the board's cells (rarer things cover
- * fewer cells). `percent` is a percentage of all ROWS×COLS cells — ~14% of the
- * board carries something, of which gear is only ~3%.
+ * fewer cells). `percent` is a percentage of all ROWS×COLS cells — ~1.9% of the
+ * board carries something, of which gear is only ~1%.
  *
  * Nothing respawns and nothing is visible: a unit that steps on the cell simply
  * collects it. Cells occupied by starting knights, castles and towers are
  * excluded at scatter time (see setup.ts).
  */
 export interface PickupSpawnEntry {
-  kind: 'artifact' | 'weapon' | 'armor';
+  kind: 'part' | 'weapon' | 'armor';
   name: string;
   percent: number;
 }
 
 export const HIDDEN_PICKUP_SPAWN: readonly PickupSpawnEntry[] = [
-  // Artifacts — ~11.5% of the board, split by rarity.
-  { kind: 'artifact', name: 'Трава С.', percent: 3.5 },
-  { kind: 'artifact', name: 'Посох огня', percent: 2.5 },
-  { kind: 'artifact', name: 'Волшебная палочка', percent: 2.5 },
-  { kind: 'artifact', name: 'Солнечные часы', percent: 1.5 },
-  { kind: 'artifact', name: 'Вода серебряных трав', percent: 1.5 },
-  // Gear — ~3.1% total, so finding a sword stays an event.
-  { kind: 'weapon', name: 'Солнечный меч', percent: 0.8 },
-  { kind: 'weapon', name: 'Синий лук', percent: 0.8 },
-  { kind: 'armor', name: 'Кольчуга', percent: 1.0 },
-  { kind: 'armor', name: 'Латы', percent: 0.5 },
+  // Weapon parts — ~1.5% of the board, split by rarity.
+  { kind: 'part', name: 'Дерево', percent: 0.45 },
+  { kind: 'part', name: 'Металл', percent: 0.3 },
+  { kind: 'part', name: 'Амулет', percent: 0.3 },
+  { kind: 'part', name: 'Рубин', percent: 0.2 },
+  { kind: 'part', name: 'Стрелы', percent: 0.2 },
+  // Gear — 1 of each per match. Anything below 0.25% rounds to zero cells on a
+  // 20×20 board, which would remove gear from the game entirely.
+  { kind: 'weapon', name: 'Солнечный меч', percent: 0.25 },
+  { kind: 'weapon', name: 'Синий лук', percent: 0.25 },
+  { kind: 'armor', name: 'Кольчуга', percent: 0.25 },
+  { kind: 'armor', name: 'Латы', percent: 0.25 },
 ];
 
-// Loot odds (weights sum to 100): nothing 40%, artifacts 15%, weapon 15%,
+// Loot odds (weights sum to 100): nothing 40%, parts 15%, weapon 15%,
 // armour 30%.
 export const RUINS_LOOT_TABLE: readonly LootEntry[] = [
   { type: 'nothing', weight: 40 },
-  // Artifacts — 15% total, split by rarity.
-  { type: 'artifact', name: 'Трава С.', weight: 5 },
-  { type: 'artifact', name: 'Посох огня', weight: 3 },
-  { type: 'artifact', name: 'Волшебная палочка', weight: 3 },
-  { type: 'artifact', name: 'Солнечные часы', weight: 2 },
-  { type: 'artifact', name: 'Вода серебряных трав', weight: 2 },
+  // Weapon parts — 15% total, split by rarity.
+  { type: 'part', name: 'Дерево', weight: 5 },
+  { type: 'part', name: 'Металл', weight: 3 },
+  { type: 'part', name: 'Амулет', weight: 3 },
+  { type: 'part', name: 'Рубин', weight: 2 },
+  { type: 'part', name: 'Стрелы', weight: 2 },
   // Weapons — 15% total.
   { type: 'weapon', name: 'Солнечный меч', weight: 8 },
   { type: 'weapon', name: 'Синий лук', weight: 7 },
@@ -161,49 +215,32 @@ export const UNIT_TYPES: UnitTypes = {
     frame: 192,
     letter: 'S',
   },
+  mage: {
+    name: 'Боевой маг',
+    hp: 2,
+    damage: 0, // damage comes entirely from the energy-costed 'mage-attack' action, not a plain melee/ranged hit
+    armor: 0,
+    moves: 2,
+    frame: 192,
+    letter: 'M',
+  },
 };
 
-export const SPELLS: readonly Spell[] = [
-  {
-    name: 'Дождь защиты',
-    recipe: {
-      'Вода серебряных трав': 2,
-      'Волшебная палочка': 1,
-      'Трава С.': 1,
-    },
-    desc: '+2 HP всем своим',
-    icon: 'spell_rain',
-  },
-  {
-    name: 'Сталь свободы',
-    recipe: {
-      'Посох огня': 1,
-      'Вода серебряных трав': 1,
-      'Волшебная палочка': 1,
-    },
-    desc: 'Восстанавливает до +2 защиты, но не выше стартовой',
-    icon: 'spell_steel',
-  },
-  {
-    name: 'Небо огня',
-    recipe: {
-      'Трава С.': 3,
-      'Волшебная палочка': 1,
-      'Солнечные часы': 1,
-    },
-    desc: '+2 урона всем союзникам на 2 хода (этот + следующий)',
-    icon: 'spell_fire_sky',
-  },
-];
-
+/**
+ * Craftable weapons/armour. Recipes are written in weapon parts (see
+ * PartName) — the old common-spell system (Дождь защиты/Сталь свободы/Небо
+ * огня) is gone entirely; only the mage's own 4 abilities exist now (see
+ * apply.ts's mage-* actions). Recipes below mirror the old artifact-costed
+ * ones 1:1, remapped: Трава С.→Дерево, Посох огня→Металл, Волшебная
+ * палочка→Амулет, Солнечные часы→Рубин, Вода серебряных трав→Стрелы.
+ */
 export const WEAPONS: readonly Weapon[] = [
   {
     name: 'Солнечный меч',
-    // Harder to craft now: two fire staves plus the rarer reagents.
     recipe: {
-      'Посох огня': 2,
-      'Волшебная палочка': 1,
-      'Солнечные часы': 1,
+      'Металл': 2,
+      'Амулет': 1,
+      'Рубин': 1,
     },
     desc: '+3 урона выбранному юниту',
     amount: 3,
@@ -215,10 +252,10 @@ export const WEAPONS: readonly Weapon[] = [
   {
     name: 'Синий лук',
     recipe: {
-      'Вода серебряных трав': 2,
-      'Трава С.': 2,
-      'Посох огня': 1,
-      'Волшебная палочка': 1,
+      'Стрелы': 2,
+      'Дерево': 2,
+      'Металл': 1,
+      'Амулет': 1,
     },
     desc: '+2 урона лучнику',
     amount: 2,
@@ -231,7 +268,7 @@ export const WEAPONS: readonly Weapon[] = [
 
 /**
  * Craftable / lootable armour. Equipping raises both the unit's current armour
- * and its max armour by `amount` (so castle/spell restoration accounts for it).
+ * and its max armour by `amount` (so castle restoration accounts for it).
  * Like weapons it occupies a single slot per unit — a unit can carry one
  * weapon and one piece of armour.
  */
@@ -239,8 +276,8 @@ export const ARMORS: readonly Weapon[] = [
   {
     name: 'Кольчуга',
     recipe: {
-      'Трава С.': 1,
-      'Вода серебряных трав': 1,
+      'Дерево': 1,
+      'Стрелы': 1,
     },
     desc: '+2 брони выбранному юниту',
     amount: 2,
@@ -251,9 +288,9 @@ export const ARMORS: readonly Weapon[] = [
   {
     name: 'Латы',
     recipe: {
-      'Посох огня': 1,
-      'Солнечные часы': 1,
-      'Вода серебряных трав': 1,
+      'Металл': 1,
+      'Рубин': 1,
+      'Стрелы': 1,
     },
     desc: '+4 брони выбранному юниту',
     amount: 4,
@@ -265,12 +302,13 @@ export const ARMORS: readonly Weapon[] = [
   },
 ];
 
-export const DEFAULT_TOWERS: readonly TowerPosition[] = [
-  { row: 5, col: 4 },
-  { row: 5, col: 15 },
-  { row: 14, col: 4 },
-  { row: 14, col: 15 },
-];
+/**
+ * Mage towers no longer exist as a fixed match-start feature — towers are
+ * now an ordinary structure knights build themselves (see BUILD_WORK_TOTAL).
+ * Kept as an empty array (not deleted) purely as the fallback default for
+ * `world.ts`/`save.ts` callers that expect a TowerPosition[] to exist.
+ */
+export const DEFAULT_TOWERS: readonly TowerPosition[] = [];
 
 export const DEFAULT_RUINS: RuinsArea = {
   top: 9,
@@ -293,4 +331,7 @@ export const START_POSITIONS_P1: readonly StartPosition[] = [
   { type: 'archer', row: 0, col: 1 },
   { type: 'archer', row: 0, col: 2 },
   { type: 'knight', row: 0, col: 3 },
+  // The mage is a base roster unit now, same footing as knight/archer/
+  // cavalry — not an exotic pick reserved for one faction preset.
+  { type: 'mage', row: 2, col: 1 },
 ];

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseAction } from '../match/validator.js';
 import { createMatch, dispatchAction, joinMatch } from '../match/state.js';
+import type { ServerAction } from '@kc/game-rules';
 
 describe('parseAction', () => {
   it('accepts a well-formed move', () => {
@@ -137,4 +138,44 @@ describe('dispatchAction (anti-cheat checks)', () => {
     expect(res.ok).toBe(false);
     expect(res.error?.code).toBe('game-over');
   });
+});
+
+describe('parseAction — knows every reducer action', () => {
+  // Typed as Record<kind, …>: adding a ServerAction kind to @kc/game-rules
+  // without listing it here is a compile error, and listing it here without
+  // adding it to the zod schema fails below — so the online server can never
+  // silently reject an action the client already played.
+  const samples: { [K in ServerAction['kind']]: Extract<ServerAction, { kind: K }> } = {
+    move: { kind: 'move', unitId: 1, row: 1, col: 1, cost: 1 },
+    attack: {
+      kind: 'attack', unitId: 1, mode: 'pierce', cost: 2, targetRow: 1, targetCol: 1, landingRow: 0, landingCol: 1,
+      targets: [{ row: 1, col: 1 }, { row: 2, col: 1 }],
+    },
+    'end-turn': { kind: 'end-turn' },
+    resign: { kind: 'resign', player: 1 },
+    craft: { kind: 'craft', unitId: 1, index: 0 },
+    'craft-armor': { kind: 'craft-armor', unitId: 1, index: 0 },
+    'draw-part': { kind: 'draw-part', unitId: 1 },
+    'equip-weapon': { kind: 'equip-weapon', unitId: 1 },
+    'search-ruins': { kind: 'search-ruins', unitId: 1 },
+    'castle-heal': { kind: 'castle-heal', unitId: 1 },
+    'transfer-items': { kind: 'transfer-items', fromUnitId: 1, toUnitId: 2, parts: { 'Дерево': 1 }, weapon: true, armor: true },
+    'mage-attack': { kind: 'mage-attack', unitId: 1, targetRow: 1, targetCol: 1, damage: 2 },
+    'mage-ward': { kind: 'mage-ward', unitId: 1, toggleUnitIds: [2] },
+    'mage-drain': { kind: 'mage-drain', unitId: 1, targetUnitId: 2 },
+    'mage-burn-bridge': { kind: 'mage-burn-bridge', unitId: 1, row: 1, col: 1 },
+    'mage-heal': { kind: 'mage-heal', unitId: 1, targetUnitId: 2 },
+    'throw-rock': { kind: 'throw-rock', unitId: 1, row: 1, col: 1 },
+    'build-tower': { kind: 'build-tower', unitId: 1, row: 1, col: 1 },
+    'build-bridge': { kind: 'build-bridge', unitId: 1, row: 1, col: 1 },
+  };
+  for (const [kind, sample] of Object.entries(samples)) {
+    it(`accepts ${kind}`, () => {
+      const r = parseAction(sample);
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      // zod drops unknown keys silently — a field the schema forgot would
+      // vanish before the reducer sees it, so the parse must be lossless.
+      if (r.ok) expect(r.value).toEqual(sample);
+    });
+  }
 });

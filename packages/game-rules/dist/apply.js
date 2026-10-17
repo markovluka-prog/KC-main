@@ -18,7 +18,8 @@ import { ARMORS, BRIDGE_MAX_DURABILITY, BUILD_COST_PER_TURN, BUILD_WORK_TOTAL, D
 import { weightedChoiceWith } from './rng.js';
 import { TOWER_DAMAGE_FACTOR } from './combat.js';
 import { insideBoard } from './board.js';
-import { ALL8_DIRS, CATAPULT_MIN_RANGE, CAVALRY_RIVER_JUMP_COST, CROSSBOW_PIERCE_COST, CROSSBOW_PIERCE_RANGE, archerRadiusFor, catapultMaxRangeFor, } from './moves.js';
+import { boardFromState, toUnitState } from './board-state.js';
+import { ALL8_DIRS, generateLegalMoves, CATAPULT_MIN_RANGE, CROSSBOW_PIERCE_COST, CROSSBOW_PIERCE_RANGE, archerRadiusFor, catapultMaxRangeFor, } from './moves.js';
 import { MAX_ACTIVATIONS_PER_TURN, RULES_VERSION } from './state.js';
 /** True if (row,col) falls inside a (non-zero-size) ruins rectangle. */
 function inRuinsArea(area, row, col) {
@@ -181,8 +182,43 @@ function dropUnitBackpack(next, unit) {
         armorGear: unit.armorGear ? gearToItem('armor', unit.armorGear) : null,
     });
 }
+/**
+ * Leave one piece of gear lying on (row,col) as a single-item backpack — what
+ * happens to crafted/found gear its holder can't wear. Mirrors the web
+ * client's pushDroppedGear: no forced "equip an ally" step, whoever later
+ * steps on the cell and can wear it picks it up (see pickUpDroppedItems).
+ */
+function dropGearOnCell(next, row, col, slot, item) {
+    next.droppedBackpacks.push({
+        row,
+        col,
+        parts: emptyBackpack(),
+        weapon: slot === 'weapon' ? item : null,
+        armorGear: slot === 'armor' ? item : null,
+    });
+}
+/** A destroyed bridge takes whatever lay on it into the river — otherwise the
+ * loot marker would sit on an impassable water cell forever. */
+function sinkLootAt(next, row, col) {
+    next.droppedBackpacks = next.droppedBackpacks.filter((d) => !(d.row === row && d.col === col));
+}
 function findUnit(state, id) {
     return state.units.find((u) => u.id === id && u.hp > 0) ?? null;
+}
+/**
+ * A mage that just died (in combat, or overdrawn absorbing a ward hit — see
+ * absorbWithWard below) leaves every unit it was warding pointing at a dead
+ * id. absorbWithWard's own `mage.hp > 0` check already stops that stale link
+ * from blocking damage on their NEXT hit, but until then the flag — and the
+ * client's 🛡️ badge that mirrors it — stays up as if the shield still held.
+ * Call this the moment a mage's death is applied so the shield visibly drops
+ * with its caster instead of lingering.
+ */
+function clearWardsCastBy(next, deadMageId) {
+    for (const u of next.units) {
+        if (u.wardedBy === deadMageId)
+            u.wardedBy = null;
+    }
 }
 /**
  * Ward check run before ANY damage is applied to `target`: if a living mage
@@ -220,8 +256,13 @@ function absorbWithWard(next, target, rawDamage, events) {
     }
     else {
         // Not enough energy to cover the drain — the shield still holds (target
-        // takes 0) but the mage itself dies from the overdraw.
+        // takes 0) but the mage itself dies from the overdraw. Zero its hp so any
+        // caller still holding the object (a pierce bolt's hit list, drain's
+        // nextMage) sees it as dead — removing it from `units` alone let the same
+        // bolt hit it again and drop its backpack a second time.
+        mage.hp = 0;
         dropUnitBackpack(next, mage);
+        clearWardsCastBy(next, mage.id);
         next.units = next.units.filter((u) => u.id !== mage.id);
         events.push({ kind: 'mage-died-overdrawn', data: { unitId: mage.id, targetId: target.id, needed: cost, had: mageEnergy } });
         events.push({ kind: 'unit-killed', data: { unitId: mage.id } });
@@ -257,6 +298,10 @@ export function applyAction(state, action, rng) {
         case 'attack':
             return applyAttack(state, action);
         case 'end-turn':
+            // A finished match stays exactly as it ended — ending the "turn" after
+            // the winning move used to flip currentPlayer and bump turnNumber.
+            if (state.winner !== null)
+                return ok(state, []);
             return ok(endTurn(state), [{ kind: 'turn-ended', data: { player: state.currentPlayer } }]);
         case 'resign':
             return applyResign(state, action.player);
@@ -274,6 +319,8 @@ export function applyAction(state, action, rng) {
             return applyCastleHeal(state, action.unitId);
         case 'transfer-items':
             return applyTransferItems(state, action);
+        case 'throw-rock':
+            return applyThrowRock(state, action);
         case 'build-tower':
             return applyBuild(state, action.unitId, action.row, action.col, 'tower');
         case 'build-bridge':
@@ -315,19 +362,16 @@ function applyMove(state, a) {
     if ((next.constructions ?? []).some((c) => c.row === a.row && c.col === a.col)) {
         return err('illegal-move', 'blocked by an unfinished construction site');
     }
-    // Cavalry river leap: 2 orthogonal cells over exactly one river tile. Any
-    // other 2-cell jump stays illegal, so this can't be used as a generic dash.
-    const dRow = a.row - u.row;
-    const dCol = a.col - u.col;
-    const isTwoCellHop = Math.abs(dRow) + Math.abs(dCol) === 2 && (dRow === 0 || dCol === 0);
-    if (isTwoCellHop) {
-        const midRow = u.row + dRow / 2;
-        const midCol = u.col + dCol / 2;
-        const midIsRiver = next.terrain.some((t) => t.row === midRow && t.col === midCol && t.type === 'river');
-        if (u.type !== 'cavalry' || !midIsRiver || a.cost !== CAVALRY_RIVER_JUMP_COST) {
-            return err('illegal-move', 'only cavalry may leap a one-cell river');
-        }
-    }
+    // Cavalry's river leap, the archer's multi-cell walk and every other move
+    // shape are validated together by the shared generator below. A separate
+    // "2-cell hop ⇒ must be a cavalry river leap" check used to live here and
+    // rejected every legal 2-cell archer move.
+    // The authoritative check: the move must be one the shared generator would
+    // offer this unit right now (straight lines, per-type reach, exact cost).
+    // Without it a client could claim any destination at any cost.
+    const legal = generateLegalMoves(boardFromState(next), toUnitState(u)).some((m) => m.row === a.row && m.col === a.col && m.cost === a.cost);
+    if (!legal)
+        return err('illegal-move', 'not a legal move for this unit');
     const actErr = activateUnit(next, u);
     if (actErr)
         return { ok: false, error: actErr };
@@ -378,30 +422,21 @@ function claimHiddenPickup(next, unit, events) {
     const item = gearToItem(slot, gear);
     // The finder wears it when it can.
     if (canEquipGear({ ...item, slot }, unit, unit.player)) {
-        equipGearToUnit(unit, item);
+        // Pass the slot through: GearItem carries none, and without it a found
+        // armour piece was equipped as a weapon (+damage instead of +armour).
+        equipGearToUnit(unit, { ...item, slot });
         events.push({
             kind: 'weapon-equipped',
             data: { unitId: unit.id, name: gear.name, amount: gear.amount, slot, pickedUp: true },
         });
         return;
     }
-    // Otherwise offer it to a compatible ally, exactly like ruins loot did.
-    const hasRecipient = next.units.some((o) => o.hp > 0 && o.player === unit.player && canEquipGear({ ...item, slot }, o, unit.player));
-    if (hasRecipient) {
-        next.pendingWeaponEquip = { ...item, slot };
-        events.push({
-            kind: 'weapon-found',
-            data: { unitId: unit.id, player: unit.player, name: gear.name, slot },
-        });
-        return;
-    }
-    // Nobody in the army can wear it — leave it lying on the cell.
-    next.droppedBackpacks.push({
-        row: unit.row,
-        col: unit.col,
-        parts: emptyBackpack(),
-        weapon: slot === 'weapon' ? item : null,
-        armorGear: slot === 'armor' ? item : null,
+    // The finder can't wear it — leave it lying on the cell for whoever can
+    // (same as the web client; there is no forced "equip an ally" step).
+    dropGearOnCell(next, unit.row, unit.col, slot, item);
+    events.push({
+        kind: 'weapon-found',
+        data: { unitId: unit.id, player: unit.player, name: gear.name, slot, dropped: true },
     });
 }
 /**
@@ -483,6 +518,7 @@ function applyCatapultBridgeShot(next, attacker, a) {
         next.terrain = next.terrain
             .filter((t) => !(t.row === a.targetRow && t.col === a.targetCol && t.type === 'bridge'))
             .concat([{ row: a.targetRow, col: a.targetCol, type: 'river' }]);
+        sinkLootAt(next, a.targetRow, a.targetCol);
         events.push({ kind: 'bridge-burned', data: { row: a.targetRow, col: a.targetCol, by: attacker.id } });
     }
     else {
@@ -580,6 +616,8 @@ function applyPierceAttack(next, attacker, a) {
         });
         if (target.hp <= 0) {
             dropUnitBackpack(next, target);
+            if (target.type === 'mage')
+                clearWardsCastBy(next, target.id);
             events.push({ kind: 'unit-killed', data: { unitId: target.id } });
         }
     }
@@ -681,8 +719,10 @@ function applyAttack(state, a) {
             kind: 'unit-attacked',
             data: { attackerId: attacker.id, targetId: target.id, damage: 0, hpLeft: target.hp, warded: true },
         });
-        if (a.mode === 'jump' || a.mode === 'l-attack')
+        if (a.mode === 'jump' || a.mode === 'l-attack') {
+            claimHiddenPickup(next, attacker, events);
             pickUpDroppedItems(next, attacker, events);
+        }
         return ok(next, events);
     }
     let damageToHp = 0;
@@ -701,13 +741,19 @@ function applyAttack(state, a) {
     if (target.hp <= 0) {
         // Drop the slain unit's whole backpack onto its cell so it can be picked up later.
         dropUnitBackpack(next, target);
+        if (target.type === 'mage')
+            clearWardsCastBy(next, target.id);
         next.units = next.units.filter((u) => u.id !== target.id);
         events.push({ kind: 'unit-killed', data: { unitId: target.id } });
         maybeFinishMatch(next, events);
     }
     // A jump/l-attack lands the attacker on a new cell — let it grab gear there.
-    if (a.mode === 'jump' || a.mode === 'l-attack')
+    // Buried loot first, then anything lying on the cell — same order as a
+    // plain move and as the web client (which already claimed buried loot here).
+    if (a.mode === 'jump' || a.mode === 'l-attack') {
+        claimHiddenPickup(next, attacker, events);
         pickUpDroppedItems(next, attacker, events);
+    }
     return ok(next, events);
 }
 /**
@@ -808,9 +854,8 @@ function isOnTower(state, row, col) {
  * Craft a weapon (Солнечный меч / Синий лук) from a unit's own backpack of
  * weapon parts. Mirrors
  * the web client's craftWeapon(): requires a unit with a move to spend, deducts
- * the recipe, and — if an eligible ally exists — sets `pendingWeaponEquip` so the
- * next action must equip it. If no eligible recipient exists the weapon is
- * dropped (the move is still spent), exactly as in the offline game.
+ * the recipe and equips the crafter. If the crafter can't wear it, the weapon
+ * is left on its cell (the move is still spent), exactly as in the offline game.
  */
 /** True if `backpack` holds at least `recipe`'s counts of every part. */
 function canAffordFromBackpack(backpack, recipe) {
@@ -854,13 +899,13 @@ function applyCraft(state, unitId, index) {
         equipGearToUnit(nextU, pending);
         return ok(next, [{ kind: 'weapon-crafted', data: { unitId, index, name: weapon.name, dropped: false } }]);
     }
-    const hasRecipient = next.units.some((t) => canEquipGear(pending, t, next.currentPlayer));
-    if (hasRecipient)
-        next.pendingWeaponEquip = pending;
+    // The crafter can't wear it — it's left on the crafter's cell (web client
+    // parity: no forced equip picker).
+    dropGearOnCell(next, nextU.row, nextU.col, 'weapon', gearToItem('weapon', weapon));
     return ok(next, [
         {
             kind: 'weapon-crafted',
-            data: { unitId, index, name: weapon.name, dropped: !hasRecipient },
+            data: { unitId, index, name: weapon.name, dropped: true },
         },
     ]);
 }
@@ -902,13 +947,11 @@ function applyCraftArmor(state, unitId, index) {
             { kind: 'weapon-crafted', data: { unitId, index, name: armor.name, slot: 'armor', dropped: false } },
         ]);
     }
-    const hasRecipient = next.units.some((t) => canEquipGear(pending, t, next.currentPlayer));
-    if (hasRecipient)
-        next.pendingWeaponEquip = pending;
+    dropGearOnCell(next, nextU.row, nextU.col, 'armor', gearToItem('armor', armor));
     return ok(next, [
         {
             kind: 'weapon-crafted',
-            data: { unitId, index, name: armor.name, slot: 'armor', dropped: !hasRecipient },
+            data: { unitId, index, name: armor.name, slot: 'armor', dropped: true },
         },
     ]);
 }
@@ -1181,6 +1224,8 @@ function applyMageAttack(state, a) {
     events.push({ kind: 'mage-attacked', data: { unitId: nextMage.id, targetId: nextTarget.id, damage, hpLeft: nextTarget.hp, cost } });
     if (nextTarget.hp <= 0) {
         dropUnitBackpack(next, nextTarget);
+        if (nextTarget.type === 'mage')
+            clearWardsCastBy(next, nextTarget.id);
         next.units = next.units.filter((u) => u.id !== nextTarget.id);
         events.push({ kind: 'unit-killed', data: { unitId: nextTarget.id } });
         maybeFinishMatch(next, events);
@@ -1313,6 +1358,11 @@ function applyMageBurnBridge(state, a) {
     const isBridge = state.terrain.some((t) => t.row === a.row && t.col === a.col && t.type === 'bridge');
     if (!isBridge)
         return err('no-bridge-here', 'no bridge at given cell');
+    // Burning a bridge out from under a unit would leave it standing in the
+    // river — same rule as building one: the cell must be empty.
+    if (state.units.some((u) => u.hp > 0 && u.row === a.row && u.col === a.col)) {
+        return err('cell-occupied', 'a unit is standing on the bridge');
+    }
     const chebyshev = Math.max(Math.abs(a.row - mage.row), Math.abs(a.col - mage.col));
     const cost = chebyshev * MAGE_BURN_BRIDGE_ENERGY_PER_CELL;
     if ((mage.energy ?? 0) < cost)
@@ -1329,6 +1379,7 @@ function applyMageBurnBridge(state, a) {
     next.terrain = next.terrain
         .filter((t) => !(t.row === a.row && t.col === a.col && t.type === 'bridge'))
         .concat([{ row: a.row, col: a.col, type: 'river' }]);
+    sinkLootAt(next, a.row, a.col);
     nextMage.energy = (nextMage.energy ?? 0) - cost;
     nextMage.movesLeft -= 1;
     if (nextMage.movesLeft <= 0)
@@ -1394,9 +1445,9 @@ function bridgeKey(row, col) {
  * A knight builds a tower or bridge by standing on a cell orthogonally
  * adjacent to the target cell and spending its whole turn (all movesLeft,
  * which must be exactly its full BUILD_COST_PER_TURN — it can't half-commit
- * moves elsewhere first) on the site. Building is NOT a per-unit activation
- * — any knight can add work to an in-progress site, including one a
- * different knight started; the site tracks progress, not who's building it.
+ * moves elsewhere first) on the site. Any knight can add work to an
+ * in-progress site, including one a different knight started; the site
+ * tracks progress, not who's building it. Counts as the knight's activation.
  *
  * The target cell is impassable (like a mountain) while under construction.
  * Once `progress` reaches BUILD_WORK_TOTAL the site is promoted: a tower
@@ -1431,7 +1482,9 @@ function applyBuild(state, unitId, row, col, kind) {
             if (state.towers.some((t) => t.row === row && t.col === col)) {
                 return err('already-built', 'a tower already stands here');
             }
-            if (isBlockedByTerrainOrUnit(state, row, col)) {
+            // A bridge isn't open ground either (the client never offers it).
+            const onBridge = state.terrain.some((t) => t.row === row && t.col === col && t.type === 'bridge');
+            if (onBridge || isBlockedByTerrainOrUnit(state, row, col)) {
                 return err('not-empty-cell', 'target cell is not free to build on');
             }
         }
@@ -1446,6 +1499,12 @@ function applyBuild(state, unitId, row, col, kind) {
     }
     const next = cloneState(state);
     const nextU = next.units.find((x) => x.id === unitId);
+    // The building knight still uses one of the turn's activations, same as the
+    // client (selecting a unit activates it) — otherwise building would be a
+    // way around MAX_ACTIVATIONS_PER_TURN.
+    const actErr = activateUnit(next, nextU);
+    if (actErr)
+        return { ok: false, error: actErr };
     nextU.movesLeft = 0;
     nextU.done = true;
     const site = next.constructions.find((c) => c.row === row && c.col === col);
@@ -1473,6 +1532,72 @@ function applyBuild(state, unitId, row, col, kind) {
         next.constructions = [...next.constructions, { row, col, kind, progress }];
     }
     return ok(next, events);
+}
+/** Rows kept clear in front of each castle gate — boulders may not seal a keep. */
+const ROCK_CASTLE_APPROACH = 2;
+/**
+ * True when (row,col) lies in a castle footprint or the approach strip in
+ * front of its gate — the band where a catapult may not drop a boulder.
+ * Orientation-free (both ends of the board are covered), so the client can
+ * use it on its physical board unchanged.
+ */
+export function isRockForbiddenZone(row, col, castleCols) {
+    return castleCols.some((cc) => col >= cc &&
+        col < cc + 4 &&
+        (row < 5 + ROCK_CASTLE_APPROACH || row >= ROWS - 5 - ROCK_CASTLE_APPROACH));
+}
+/**
+ * Whether a catapult may aim a boulder at (row,col): empty ground (or an
+ * existing rock, which it shatters), never a unit, tower, river, bridge,
+ * mountain, construction site, dropped loot, or the castle approach zone.
+ */
+export function rockTargetAllowed(state, row, col) {
+    if (!insideBoard(row, col))
+        return false;
+    if (state.units.some((u) => u.hp > 0 && u.row === row && u.col === col))
+        return false;
+    if (state.towers.some((t) => t.row === row && t.col === col))
+        return false;
+    if (state.terrain.some((t) => t.row === row && t.col === col && (t.type === 'river' || t.type === 'bridge' || t.type === 'mountain'))) {
+        return false;
+    }
+    if ((state.constructions ?? []).some((c) => c.row === row && c.col === col))
+        return false;
+    if ((state.droppedBackpacks ?? []).some((d) => d.row === row && d.col === col))
+        return false;
+    return !isRockForbiddenZone(row, col, [state.castleP1Col, state.castleP2Col]);
+}
+function applyThrowRock(state, a) {
+    const u = findUnit(state, a.unitId);
+    if (!u)
+        return err('unit-not-found', `unit ${a.unitId} not alive`);
+    if (u.player !== state.currentPlayer)
+        return err('wrong-turn', "not this player's turn");
+    if (u.type !== 'catapult')
+        return err('unit-cannot-act', 'only a catapult can throw a rock');
+    if (u.done)
+        return err('unit-cannot-act', 'unit already finished');
+    if (u.movesLeft < 1)
+        return err('no-moves-left', 'throwing a rock costs a move');
+    const dist = Math.abs(a.row - u.row) + Math.abs(a.col - u.col);
+    if (dist < CATAPULT_MIN_RANGE || dist > catapultMaxRangeFor(isOnTower(state, u.row, u.col))) {
+        return err('illegal-attack', 'rock target out of range');
+    }
+    if (!rockTargetAllowed(state, a.row, a.col))
+        return err('not-empty-cell', 'cannot drop a rock there');
+    const next = cloneState(state);
+    const nextU = next.units.find((x) => x.id === u.id);
+    const actErr = activateUnit(next, nextU);
+    if (actErr)
+        return { ok: false, error: actErr };
+    const hadRock = next.terrain.some((t) => t.row === a.row && t.col === a.col && t.type === 'rock');
+    next.terrain = hadRock
+        ? next.terrain.filter((t) => !(t.row === a.row && t.col === a.col && t.type === 'rock'))
+        : [...next.terrain, { row: a.row, col: a.col, type: 'rock' }];
+    nextU.movesLeft -= 1;
+    if (nextU.movesLeft <= 0)
+        nextU.done = true;
+    return ok(next, [{ kind: hadRock ? 'rock-shattered' : 'rock-thrown', data: { unitId: u.id, row: a.row, col: a.col } }]);
 }
 function pickLoot(rng) {
     const items = [...RUINS_LOOT_TABLE];

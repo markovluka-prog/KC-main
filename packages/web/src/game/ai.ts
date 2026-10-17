@@ -18,9 +18,19 @@ import {
   getAllRuins,
   getTowers,
   getTerrain,
+  getConstructions,
+  emptyBackpack,
   insideBoard,
   manhattan,
   BEAM_DIFFICULTY,
+  CROSSBOW_PIERCE_COST,
+  CROSSBOW_PIERCE_RANGE,
+  CAVALRY_RIVER_JUMP_COST,
+  MAGE_ENERGY_REGEN_PER_TURN,
+  MAGE_MAX_ENERGY,
+  TOWER_DAMAGE_FACTOR,
+  archerRadiusFor,
+  catapultMaxRangeFor,
 } from '@kc/game-rules';
 import type { RuinsArea } from '@kc/game-rules';
 // Common spells (Дождь защиты/Сталь свободы/Небо огня) were removed from the
@@ -31,7 +41,6 @@ import type { RuinsArea } from '@kc/game-rules';
 // rewritten, since the AI's spell-casting behaviour isn't part of this work.
 const SPELLS: readonly { name: string; recipe: CraftRecipe; desc: string; icon: string }[] = [];
 type ArtifactName = PartName;
-type DroppedItem = GearItem & { row: number; col: number; slot: 'weapon' | 'armor' };
 type SpellRecipe = CraftRecipe;
 import type { Board } from './Board.js';
 import type { Unit, UnitWeapon } from './Unit.js';
@@ -147,7 +156,10 @@ export interface AIGameAPI {
   selectedUnit: Unit | null;
   pendingWeaponEquip: PendingWeaponEquip | null;
   pendingCastleHealing: PendingCastleHealing | null;
-  readonly inventory: Record<Player, Record<ArtifactName, number>>;
+  /** Legacy shared per-player pool. The live game no longer has one — parts
+   *  live in each unit's own backpack — so this is optional and only read
+   *  through sideParts(). */
+  readonly inventory?: Record<Player, Partial<Record<ArtifactName, number>>>;
   readonly shieldTurns: Record<Player, number>;
   readonly damageBuff: Record<Player, number>;
   lastEvent: string;
@@ -165,7 +177,7 @@ export interface AIGameAPI {
   computeDamage(attacker: Unit, target: Unit): number;
   moveActionsFor(unit: Unit): MoveAction[];
   attackActionsFor(unit: Unit | UnitLikeForAttack): AttackAction[];
-  performAttack(row: number, col: number, byAi?: boolean): boolean;
+  performAttack(row: number, col: number, byAi?: boolean, chosenAction?: AttackAction | null): boolean;
   performMove(row: number, col: number, byAi?: boolean): boolean;
   drawArtifact(byAi?: boolean): void;
   castSpell(index: number, byAi?: boolean): void;
@@ -184,8 +196,15 @@ export interface AIGameAPI {
     },
     unit: Unit,
   ): boolean;
-  canEquipGearForPickup(item: DroppedItem, unit: Unit): boolean;
-  readonly droppedItems: DroppedItem[];
+  canEquipGearForPickup(item: GearItem & { slot: 'weapon' | 'armor' }, unit: Unit): boolean;
+  /** Dead units' backpacks lying on the board (parts + weapon + armour). */
+  readonly droppedBackpacks?: Array<{
+    row: number;
+    col: number;
+    parts: Partial<Record<ArtifactName, number>>;
+    weapon: (GearItem & { slot?: 'weapon' | 'armor' }) | null;
+    armorGear: (GearItem & { slot?: 'weapon' | 'armor' }) | null;
+  }>;
   renderSidebar(): void;
 }
 
@@ -282,6 +301,10 @@ export interface AIAction {
   index?: number;
   cost?: number;
   score: number;
+  /** Crossbow pierce only: every cell the bolt flies through, in order. The
+   *  game keys the shot by the FIRST cell; targetRow/Col names the first
+   *  enemy on the line so the scorers can price the hit. */
+  pierce?: Array<{ row: number; col: number }>;
 }
 
 interface PlanEntry {
@@ -306,6 +329,10 @@ interface LightUnit {
   /** True once this unit has spent one of the turn's activation slots. Acting
    *  with it again is free; acting with a fresh unit costs a slot. */
   activated: boolean;
+  /** Id of the mage shielding this unit (a hit is absorbed into its energy). */
+  wardedBy?: number | null;
+  /** Mage only: energy left to pay for absorbed hits. */
+  energy?: number;
 }
 
 interface LightState {
@@ -641,10 +668,10 @@ export class AIPlayer {
     const mine = game.ownUnits(this.player).filter((u) => u.hp > 0);
     const enemies = game.ownUnits(otherPlayer(this.player)).filter((u) => u.hp > 0);
 
-    const enemyCol = this.player === 1 ? getCastleP2Col() : getCastleP1Col();
-    const enemyRow = this.player === 1 ? ROWS - 4 : 0;
-    const ownCol = this.player === 1 ? getCastleP1Col() : getCastleP2Col();
-    const ownRow = this.player === 1 ? 0 : ROWS - 4;
+    // castleZone honours player1Bottom — hard-coding "P1 = top rows" put
+    // both castles on the wrong side in vs-AI matches (P1 sits at the bottom).
+    const { row: enemyRow, col: enemyCol } = this.castleZone(otherPlayer(this.player));
+    const { row: ownRow, col: ownCol } = this.castleZone(this.player);
     const enemyCastle = { row: enemyRow + 2, col: enemyCol + 2 };
     const ownDoor = { row: ownRow + 2, col: ownCol + 2 };
 
@@ -1160,7 +1187,14 @@ export class AIPlayer {
       if (targetUnit && !targetUnit.done && game.canUnitAct(targetUnit)) {
         game.selectUnit(targetUnit.row, targetUnit.col, true);
         if (game.selectedUnit && game.selectedUnit.id === targetUnit.id) {
-          this.executeAction(entry.action);
+          // The plan was made for the board at the START of the turn; earlier
+          // entries may since have filled this destination or killed this
+          // target. Playing a stale entry got it rejected and burned the
+          // unit's activation — re-decide for this unit on the live board.
+          const action = this.isStillLegal(game.selectedUnit, entry.action)
+            ? entry.action
+            : (this.bestActionForUnit(game.selectedUnit) ?? { type: 'skip', score: -300 });
+          this.executeAction(action);
           return;
         }
       }
@@ -1253,16 +1287,19 @@ export class AIPlayer {
       return { type: 'draw', score: 3000 + this.evaluateArtifactNeed() };
     }
     if (game.pendingWeaponEquip) return null;
+    // Parts live in the crafter's own backpack, and gear the crafter can't
+    // wear is just dropped on the ground — so only craft what it can wear.
+    void allies;
     for (let wi = 0; wi < WEAPONS.length; wi += 1) {
       const w = WEAPONS[wi]!;
-      if (!game.canAfford(game.inventory[this.player], w.recipe)) continue;
-      if (!allies.some((a) => game.canEquipWeaponToUnit(w, a))) continue;
+      if (!game.canAfford(unit.backpack, w.recipe)) continue;
+      if (!game.canEquipWeaponToUnit(w, unit)) continue;
       return { type: 'craft', index: wi, score: 9000 * this.config.economyWeight };
     }
     for (let ai = 0; ai < ARMORS.length; ai += 1) {
       const a = ARMORS[ai]!;
-      if (!game.canAfford(game.inventory[this.player], a.recipe)) continue;
-      if (!allies.some((ally) => game.canEquipWeaponToUnit(a, ally))) continue;
+      if (!game.canAfford(unit.backpack, a.recipe)) continue;
+      if (!game.canEquipWeaponToUnit(a, unit)) continue;
       return { type: 'craft-armor', index: ai, score: 8000 * this.config.economyWeight };
     }
     return null;
@@ -1675,8 +1712,8 @@ export class AIPlayer {
     if (!actions.length) return null;
     let best: { a: (typeof actions)[number]; score: number } | null = null;
     for (const a of actions) {
-      const target = game.board.unitAt(a.targetRow, a.targetCol);
-      if (!target || target.player === unit.player) continue;
+      const target = this.attackVictim(a, unit);
+      if (!target) continue;
       const damage = game.computeDamage(unit, target);
       if (damage <= 0) continue;
       const lethal = damage >= target.hp;
@@ -1906,6 +1943,25 @@ export class AIPlayer {
       const tCol = action.targetCol;
       const lRow = action.landingRow ?? action.row;
       const lCol = action.landingCol ?? action.col;
+      // Hand the game the exact attack it generated, rather than a cell to
+      // look up: a pierce bolt's plan names its first cell (which may be
+      // empty and is a plain move there) or its first victim, and cavalry can
+      // have two attacks landing on one square.
+      const sel0 = game.selectedUnit;
+      const first = action.pierce?.[0];
+      const exact = sel0
+        ? game.attackActionsFor(sel0).find((x) =>
+            x.mode === 'pierce'
+              ? (first ? x.targetRow === first.row && x.targetCol === first.col : x.targetRow === tRow && x.targetCol === tCol)
+              : x.targetRow === tRow &&
+                x.targetCol === tCol &&
+                (x.mode === 'shot' || (x.landingRow === lRow && x.landingCol === lCol)),
+          )
+        : undefined;
+      if (exact && game.performAttack(exact.targetRow, exact.targetCol, true, exact)) {
+        AIPlayer.execStats.attackOk += 1;
+        return;
+      }
       if (tRow !== undefined && tCol !== undefined) {
         if (game.performAttack(tRow, tCol, true)) {
           AIPlayer.execStats.attackOk += 1;
@@ -1970,7 +2026,9 @@ export class AIPlayer {
     enemies.forEach((enemy) => {
       const enemyAttacks = this.game.attackActionsFor(enemy);
       enemyAttacks.forEach((attack) => {
-        const target = this.game.board.unitAt(attack.targetRow, attack.targetCol);
+        // A pierce bolt threatens both cells of its line.
+        AIPlayer.attackCells(attack).forEach((cell) => {
+        const target = this.game.board.unitAt(cell.row, cell.col);
         if (target && target.player === this.player) {
           const damage = this.game.computeDamage(enemy, target);
           if (damage >= target.hp) {
@@ -1979,9 +2037,58 @@ export class AIPlayer {
             threats.push({ enemy, target, damage, lethal: false, priority: damage * 10 });
           }
         }
+        });
       });
     });
     return threats.sort((a, b) => b.priority - a.priority);
+  }
+
+  /** True if a planned move/attack is still one the game offers this unit now
+   *  (other entry types are validated by the game method itself). */
+  private isStillLegal(unit: Unit, action: AIAction): boolean {
+    if (action.type === 'move') {
+      return this.game.moveActionsFor(unit).some((m) => m.row === action.row && m.col === action.col);
+    }
+    if (action.type === 'attack') {
+      const first = action.pierce?.[0];
+      return this.game.attackActionsFor(unit).some((x) =>
+        x.mode === 'pierce'
+          ? first
+            ? x.targetRow === first.row && x.targetCol === first.col
+            : x.targetRow === action.targetRow && x.targetCol === action.targetCol
+          : x.targetRow === action.targetRow &&
+            x.targetCol === action.targetCol &&
+            (x.mode === 'shot' ||
+              (x.landingRow === (action.landingRow ?? action.row) && x.landingCol === (action.landingCol ?? action.col))),
+      );
+    }
+    return true;
+  }
+
+  /** Every cell an attack actually hits. A crossbow's pierce bolt hits its
+   *  whole line; every other attack hits targetRow/targetCol only. Code that
+   *  read targetRow alone missed the bolt's second cell entirely. */
+  private static attackCells(a: AttackAction): Array<{ row: number; col: number }> {
+    return a.mode === 'pierce' && a.targets && a.targets.length > 0
+      ? a.targets
+      : [{ row: a.targetRow, col: a.targetCol }];
+  }
+
+  /** True if a pierce bolt would also run through one of `player`'s units. */
+  private pierceHitsOwn(a: AttackAction, player: Player): boolean {
+    if (a.mode !== 'pierce') return false;
+    return AIPlayer.attackCells(a).some((c) => this.game.board.unitAt(c.row, c.col)?.player === player);
+  }
+
+  /** The enemy an attack is aimed at: the first enemy on a pierce line, or the
+   *  unit on the target cell. Null if it hits none (or would hit our own). */
+  private attackVictim(a: AttackAction, attacker: Unit): Unit | null {
+    if (this.pierceHitsOwn(a, attacker.player)) return null;
+    for (const c of AIPlayer.attackCells(a)) {
+      const u = this.game.board.unitAt(c.row, c.col);
+      if (u && u.player !== attacker.player) return u;
+    }
+    return null;
   }
 
   private bestActionForUnit(unit: Unit): AIAction | null {
@@ -1997,8 +2104,10 @@ export class AIPlayer {
     const unitFrom = { row: unit.row, col: unit.col };
     const attackActions = game.attackActionsFor(unit);
     attackActions.forEach((a) => {
-      const target = game.board.unitAt(a.targetRow, a.targetCol);
-      if (!target || target.player === unit.player) return;
+      // Pierce bolts: price the first enemy on the line, never fire through
+      // one of our own units (see attackVictim).
+      const target = this.attackVictim(a, unit);
+      if (!target) return;
       const damage = game.computeDamage(unit, target);
       const targetValue = this.calculateUnitValue(target);
       const willBeSafe = this.isSafePosition(a.landingRow, a.landingCol, unit);
@@ -2077,7 +2186,11 @@ export class AIPlayer {
         actions.push({ type: 'move', row: escape.row, col: escape.col, score });
       });
     }
-    if (unit.movesLeft >= 1) {
+    // Towers only matter to ranged units now (range bonus); with the common
+    // spells gone, walking a knight onto one just wasted its activation.
+    const towerHelps =
+      SPELLS.length > 0 || unit.type === 'archer' || unit.type === 'crossbow' || unit.type === 'catapult';
+    if (unit.movesLeft >= 1 && towerHelps) {
       for (const tower of getTowers()) {
         const occupant = game.board.unitAt(tower.row, tower.col);
         if (!occupant || occupant.player !== this.player) {
@@ -2112,8 +2225,8 @@ export class AIPlayer {
     // never crafts gear it can't actually equip. Scaled by economyWeight.
     if (unit.movesLeft >= 1 && this.config.economyWeight > 0 && !game.pendingWeaponEquip) {
       WEAPONS.forEach((w, wi) => {
-        if (!game.canAfford(game.inventory[this.player], w.recipe)) return;
-        if (!allies.some((a) => game.canEquipWeaponToUnit(w, a))) return;
+        if (!game.canAfford(unit.backpack, w.recipe)) return;
+        if (!game.canEquipWeaponToUnit(w, unit)) return;
         actions.push({
           type: 'craft',
           index: wi,
@@ -2121,8 +2234,8 @@ export class AIPlayer {
         });
       });
       ARMORS.forEach((a, ai) => {
-        if (!game.canAfford(game.inventory[this.player], a.recipe)) return;
-        if (!allies.some((ally) => game.canEquipWeaponToUnit(a, ally))) return;
+        if (!game.canAfford(unit.backpack, a.recipe)) return;
+        if (!game.canEquipWeaponToUnit(a, unit)) return;
         // Armour is pure defence (cuts every incoming hit) — value it close to a
         // weapon, scaled by its amount (+2 mail … +4 plate).
         actions.push({
@@ -2203,11 +2316,19 @@ export class AIPlayer {
           score += 1400 + Math.round(this.evaluateArtifactNeed() * 0.5);
         }
       }
-      // Free gear dropped by a slain unit — stepping here auto-equips it.
-      const loot = game.droppedItems.find(
-        (d) => d.row === m.row && d.col === m.col && game.canEquipGearForPickup(d, unit),
-      );
-      if (loot) score += (loot.slot === 'armor' ? 1200 : 1500) + loot.amount * 600;
+      // A dropped backpack — stepping here picks up its parts and auto-equips
+      // any gear this unit can wear.
+      for (const pack of game.droppedBackpacks ?? []) {
+        if (pack.row !== m.row || pack.col !== m.col) continue;
+        if (pack.weapon && game.canEquipGearForPickup({ ...pack.weapon, slot: 'weapon' }, unit)) {
+          score += 1500 + pack.weapon.amount * 600;
+        }
+        if (pack.armorGear && game.canEquipGearForPickup({ ...pack.armorGear, slot: 'armor' }, unit)) {
+          score += 1200 + pack.armorGear.amount * 600;
+        }
+        const partCount = Object.values(pack.parts ?? {}).reduce((a, n) => a + (n ?? 0), 0);
+        score += Math.round(partCount * 250 * this.config.economyWeight);
+      }
       // ── Maneuver positioning: flank / encircle an enemy by stepping adjacent ──
       // Safety is already priced in above (-3000…-4000 for unsafe cells), so these
       // bonuses only tip the AI toward boxing in enemies when it's not suicidal.
@@ -2224,8 +2345,7 @@ export class AIPlayer {
       // ── Fabian retreat: critically damaged unit moves toward its own castle ──
       const hpFrac = unit.hp / unit.maxHp;
       if (hpFrac < 0.4) {
-        const ownCastleCol = this.player === 1 ? getCastleP1Col() : getCastleP2Col();
-        const ownCastleBaseRow = this.player === 1 ? 0 : ROWS - 4;
+        const { row: ownCastleBaseRow, col: ownCastleCol } = this.castleZone(this.player);
         const castleRow = ownCastleBaseRow + 2;
         const castleCol = ownCastleCol + 2;
         const curDist = manhattan(unit.row, unit.col, castleRow, castleCol);
@@ -2238,8 +2358,7 @@ export class AIPlayer {
       // ── Главные приколы: бэкдор в замок, защита своего, контр-катапульта ──
       {
         // Enemy castle 4×4 zone. Win = stand inside it while it has no defender.
-        const enemyCol = this.player === 1 ? getCastleP2Col() : getCastleP1Col();
-        const enemyRow = this.player === 1 ? ROWS - 4 : 0;
+        const { row: enemyRow, col: enemyCol } = this.castleZone(otherPlayer(this.player));
         const inEnemyCastle =
           m.row >= enemyRow && m.row < enemyRow + 4 && m.col >= enemyCol && m.col < enemyCol + 4;
         const enemyDefenders = enemies.filter(
@@ -2255,8 +2374,7 @@ export class AIPlayer {
         }
 
         // Hold our OWN door: never leave the castle undefended with the enemy near.
-        const ownCol = this.player === 1 ? getCastleP1Col() : getCastleP2Col();
-        const ownRow = this.player === 1 ? 0 : ROWS - 4;
+        const { row: ownRow, col: ownCol } = this.castleZone(this.player);
         const inOwnCastle =
           m.row >= ownRow && m.row < ownRow + 4 && m.col >= ownCol && m.col < ownCol + 4;
         const ownDefenders = allies.filter(
@@ -2443,8 +2561,25 @@ export class AIPlayer {
     });
   }
 
+  /** Weapon parts carried by the whole side. There is no shared pool any
+   *  more — each unit has its own backpack — so sum them (a stub game may
+   *  still hand over a legacy `inventory`). */
+  private sideParts(): Record<ArtifactName, number> {
+    const total: Record<ArtifactName, number> = emptyBackpack();
+    const legacy = this.game.inventory?.[this.player];
+    if (legacy) return Object.assign(total, legacy);
+    for (const u of this.game.ownUnits(this.player)) {
+      const bp = (u as Unit & { backpack?: Partial<Record<ArtifactName, number>> }).backpack;
+      if (!bp) continue;
+      for (const [k, n] of Object.entries(bp) as [ArtifactName, number][]) {
+        if (n > 0) total[k] = (total[k] ?? 0) + n;
+      }
+    }
+    return total;
+  }
+
   private evaluateTowerCapture(): number {
-    const inv = this.game.inventory[this.player];
+    const inv = this.sideParts();
     let value = 0;
     SPELLS.forEach((spell) => {
       if (this.game.canAfford(inv, spell.recipe)) value += 3000;
@@ -2453,7 +2588,7 @@ export class AIPlayer {
   }
 
   private evaluateArtifactNeed(): number {
-    const inv = this.game.inventory[this.player];
+    const inv = this.sideParts();
     let need = 0;
     SPELLS.forEach((spell) => {
       let missing = 0;
@@ -2523,7 +2658,7 @@ export class AIPlayer {
     const allies = game.ownUnits(this.player);
     const enemies = game.ownUnits(otherPlayer(this.player));
     SPELLS.forEach((spell, index) => {
-      if (!game.canAfford(game.inventory[this.player], spell.recipe)) return;
+      if (!game.canAfford(this.sideParts(), spell.recipe)) return;
       let score = 0;
       if (index === 0) {
         const wounded = allies.reduce((sum, ally) => sum + Math.max(0, ally.maxHp - ally.hp), 0);
@@ -2562,7 +2697,7 @@ export class AIPlayer {
       }
       if (this.config.spellReluctance > 0 && Math.random() < this.config.spellReluctance) return;
       if (this.config.useMinimax && score > 0) {
-        const futureValue = this.evaluateBestFutureSpell(game.inventory[this.player], index);
+        const futureValue = this.evaluateBestFutureSpell(this.sideParts(), index);
         if (futureValue > score * 1.3) score = Math.floor(score * 0.3);
       }
       if (score > 0) actions.push({ type: 'spell', index, score });
@@ -2589,7 +2724,7 @@ export class AIPlayer {
       if (ignoreEnemyId !== null && enemy.id === ignoreEnemyId) continue;
       const attacks = this.game.attackActionsFor(enemy);
       for (const attack of attacks) {
-        if (attack.targetRow === row && attack.targetCol === col) {
+        if (AIPlayer.attackCells(attack).some((c) => c.row === row && c.col === col)) {
           const damage = this.game.computeDamage(enemy, unit);
           if (damage >= unit.hp) return false;
         }
@@ -2708,7 +2843,11 @@ export class AIPlayer {
       const attackers: ComboAttacker[] = [];
       myUnits.forEach((ally) => {
         const attacks = game.attackActionsFor(ally);
-        const hits = attacks.filter((a) => a.targetRow === enemy.row && a.targetCol === enemy.col);
+        const hits = attacks.filter(
+          (a) =>
+            !this.pierceHitsOwn(a, ally.player) &&
+            AIPlayer.attackCells(a).some((c) => c.row === enemy.row && c.col === enemy.col),
+        );
         if (hits.length > 0) {
           attackers.push({ unit: ally, damage: game.computeDamage(ally, enemy), attacks: hits });
         }
@@ -2860,7 +2999,13 @@ export class AIPlayer {
       let attackerCount = 0;
       myUnits.forEach((ally) => {
         const attacks = game.attackActionsFor(ally);
-        if (attacks.some((a) => a.targetRow === enemy.row && a.targetCol === enemy.col)) {
+        if (
+          attacks.some(
+            (a) =>
+              !this.pierceHitsOwn(a, ally.player) &&
+              AIPlayer.attackCells(a).some((c) => c.row === enemy.row && c.col === enemy.col),
+          )
+        ) {
           potDmg += game.computeDamage(ally, enemy);
           attackerCount += 1;
         }
@@ -2889,7 +3034,7 @@ export class AIPlayer {
         let score = 0;
         const attacks = game.attackActionsFor(u);
         attacks.forEach((a) => {
-          const target = game.board.unitAt(a.targetRow, a.targetCol);
+          const target = this.attackVictim(a, u);
           if (target && target.player !== this.player) {
             const dmg = game.computeDamage(u, target);
             if (dmg >= target.hp) score += 15000;
@@ -3341,11 +3486,13 @@ export class AIPlayer {
           maxHp: u.maxHp,
           maxArmor: u.maxArmor,
           activated: (u as Unit & { activated?: boolean }).activated === true,
+          wardedBy: u.wardedBy ?? null,
+          ...(u.type === 'mage' ? { energy: u.energy } : {}),
         })),
       shieldTurns: { 1: game.shieldTurns[1], 2: game.shieldTurns[2] },
       damageBuff: { 1: game.damageBuff[1], 2: game.damageBuff[2] },
       activationsLeft: this.activationBudget(),
-      inventory: { ...game.inventory[this.player] },
+      inventory: this.sideParts(),
     };
   }
 
@@ -3375,6 +3522,44 @@ export class AIPlayer {
     };
   }
 
+  /** Resolve one hit of `attacker` on `target` inside a light state: mage ward
+   *  first (same rule as apply.ts absorbWithWard — fully absorbed, the warding
+   *  mage pays the raw damage in energy or dies), otherwise armour-reduced
+   *  damage. Without the ward the search "killed" shielded units every rollout. */
+  private lightHit(ns: LightState, attacker: LightUnit, target: LightUnit): void {
+    const wardMage = target.wardedBy
+      ? ns.units.find((u) => u.id === target.wardedBy && u.type === 'mage' && u.hp > 0)
+      : undefined;
+    if (wardMage) {
+      const raw = attacker.damage;
+      if ((wardMage.energy ?? 0) >= raw) {
+        wardMage.energy = (wardMage.energy ?? 0) - raw;
+      } else {
+        wardMage.hp = 0;
+        ns.units = ns.units.filter((u) => u.id !== wardMage.id);
+        for (const u of ns.units) if (u.wardedBy === wardMage.id) u.wardedBy = null;
+      }
+      return;
+    }
+    // Ranged units firing from a tower trade damage for range (combat.ts).
+    let raw = attacker.damage;
+    if (
+      (attacker.type === 'archer' || attacker.type === 'crossbow' || attacker.type === 'catapult') &&
+      AIPlayer.isTowerCell(attacker.row, attacker.col)
+    ) {
+      raw = Math.max(1, Math.round(raw * TOWER_DAMAGE_FACTOR));
+    }
+    let dmg = Math.max(0, raw - target.armor);
+    if (ns.shieldTurns[target.player] > 0) dmg = Math.max(0, dmg - 2);
+    target.hp -= dmg;
+    if (target.hp <= 0) {
+      ns.units = ns.units.filter((u) => u.id !== target.id);
+      if (target.type === 'mage') {
+        for (const u of ns.units) if (u.wardedBy === target.id) u.wardedBy = null;
+      }
+    }
+  }
+
   private applyActionToState(state: LightState, unitId: number, action: AIAction): LightState {
     const ns = this.cloneLightState(state);
     const unit = ns.units.find((u) => u.id === unitId);
@@ -3390,6 +3575,14 @@ export class AIPlayer {
       unit.row = action.row;
       unit.col = action.col;
       unit.movesLeft -= action.cost ?? 1;
+    } else if (action.type === 'attack' && action.pierce && action.pierce.length > 0) {
+      // Pierce: every living unit on the line takes the hit, friend or foe,
+      // with the same ward rule as a single-target hit.
+      for (const cell of action.pierce) {
+        const victim = ns.units.find((u) => u.row === cell.row && u.col === cell.col && u.hp > 0);
+        if (victim) this.lightHit(ns, unit, victim);
+      }
+      unit.movesLeft -= action.cost ?? CROSSBOW_PIERCE_COST;
     } else if (
       action.type === 'attack' &&
       action.targetRow !== undefined &&
@@ -3403,10 +3596,7 @@ export class AIPlayer {
           u.hp > 0,
       );
       if (target) {
-        let dmg = Math.max(0, unit.damage - target.armor);
-        if (ns.shieldTurns[target.player] > 0) dmg = Math.max(0, dmg - 2);
-        target.hp -= dmg;
-        if (target.hp <= 0) ns.units = ns.units.filter((u) => u.id !== target.id);
+        this.lightHit(ns, unit, target);
         if (action.landingRow !== undefined && action.landingCol !== undefined) {
           unit.row = action.landingRow;
           unit.col = action.landingCol;
@@ -3865,7 +4055,54 @@ export class AIPlayer {
       state.units.find((u) => u.row === r && u.col === c && u.player !== unit.player && u.hp > 0);
     const { row, col, movesLeft } = unit;
 
-    if (unit.type === 'archer' || unit.type === 'crossbow') {
+    if (unit.type === 'crossbow') {
+      // Crossbow (mirrors game-rules moves.ts): steps 1 cell, and its only
+      // attack is the 2-cell piercing bolt along one of 8 lines, flat cost 2,
+      // hitting EVERY unit on the line. It used to be simulated as an archer
+      // (any enemy in a 5×5 square), so most planned shots did not exist in
+      // the real game and were rejected. Lines with an ally on them are left
+      // out — the bolt would hit our own unit.
+      if (movesLeft >= 1) {
+        ortho.forEach((d) => {
+          const nr = row + d[0];
+          const nc = col + d[1];
+          if (insideBoard(nr, nc) && !occupied(nr, nc)) {
+            actions.push({ type: 'move', row: nr, col: nc, cost: 1, score: 0 });
+          }
+        });
+      }
+      if (movesLeft >= CROSSBOW_PIERCE_COST) {
+        const dirs8 = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]] as const;
+        for (const [dr, dc] of dirs8) {
+          const line: Array<{ row: number; col: number }> = [];
+          for (let k = 1; k <= CROSSBOW_PIERCE_RANGE; k += 1) {
+            const r = row + dr * k;
+            const c = col + dc * k;
+            if (!insideBoard(r, c)) break;
+            line.push({ row: r, col: c });
+          }
+          if (line.length === 0) continue;
+          const onLine = line
+            .map((cell) => state.units.find((u) => u.row === cell.row && u.col === cell.col && u.hp > 0))
+            .filter((u): u is LightUnit => !!u);
+          if (onLine.some((u) => u.player === unit.player)) continue; // friendly fire
+          const firstEnemy = onLine[0];
+          if (!firstEnemy) continue;
+          actions.push({
+            type: 'attack',
+            row,
+            col,
+            targetRow: firstEnemy.row,
+            targetCol: firstEnemy.col,
+            landingRow: row,
+            landingCol: col,
+            cost: CROSSBOW_PIERCE_COST,
+            score: 0,
+            pierce: line,
+          });
+        }
+      }
+    } else if (unit.type === 'archer') {
       // Ranged: stays in place, attacks within Chebyshev-2 square.
       // Cost = Chebyshev distance (mirrors game-rules moves.ts).
       // Multi-cell walk is an archer-only rule (game-rules moves.ts breaks the
@@ -3882,11 +4119,13 @@ export class AIPlayer {
             actions.push({ type: 'move', row: nr, col: nc, cost: s, score: 0 });
           }
         });
+        // ~1.5× range from a tower, same rule as moves.ts archerRadiusFor.
+        const radius = archerRadiusFor(AIPlayer.isTowerCell(row, col));
         state.units
           .filter((u) => u.player !== unit.player && u.hp > 0)
           .forEach((enemy) => {
             const cost = Math.max(Math.abs(enemy.row - row), Math.abs(enemy.col - col));
-            if (cost <= 2 && movesLeft >= cost) {
+            if (cost <= radius && movesLeft >= cost) {
               actions.push({
                 type: 'attack',
                 row,
@@ -3915,7 +4154,7 @@ export class AIPlayer {
           .filter((u) => u.player !== unit.player && u.hp > 0)
           .forEach((enemy) => {
             const dist = manhattan(row, col, enemy.row, enemy.col);
-            if (dist >= 3 && dist <= 6) {
+            if (dist >= CATAPULT_MIN_RANGE && dist <= catapultMaxRangeFor(AIPlayer.isTowerCell(row, col))) {
               actions.push({
                 type: 'attack',
                 row,
@@ -3939,6 +4178,16 @@ export class AIPlayer {
           if (insideBoard(nr, nc) && !occupied(nr, nc)) {
             actions.push({ type: 'move', row: nr, col: nc, cost: 1, score: 0 });
           }
+        });
+      }
+      // River leap (moves.ts): clear exactly one cell of water for 2 moves.
+      if (movesLeft >= CAVALRY_RIVER_JUMP_COST) {
+        ortho.forEach((d) => {
+          if (!AIPlayer.isRiverCell(row + d[0], col + d[1])) return;
+          const lr = row + d[0] * 2;
+          const lc = col + d[1] * 2;
+          if (!insideBoard(lr, lc) || AIPlayer.isRiverCell(lr, lc) || occupied(lr, lc)) return;
+          actions.push({ type: 'move', row: lr, col: lc, cost: CAVALRY_RIVER_JUMP_COST, score: 0 });
         });
       }
       if (movesLeft >= 2) {
@@ -4021,6 +4270,20 @@ export class AIPlayer {
               cost: 1,
               score: 0,
             });
+          }
+        });
+      }
+    } else if (unit.type === 'mage') {
+      // The mage has no plain attack (its abilities are separate actions the
+      // search doesn't model) — it used to fall into the knight branch and
+      // plan 0-damage melee swings the game has no such action for, burning
+      // an activation on a rejected step. Steps only.
+      if (movesLeft >= 1) {
+        ortho.forEach((d) => {
+          const nr = row + d[0];
+          const nc = col + d[1];
+          if (insideBoard(nr, nc) && !occupied(nr, nc)) {
+            actions.push({ type: 'move', row: nr, col: nc, cost: 1, score: 0 });
           }
         });
       }
@@ -4823,6 +5086,10 @@ export class AIPlayer {
         u.done = false;
         u.movesLeft = u.maxMoves;
         u.activated = false; // fresh turn → fresh activation slots
+        // Mage energy refills at the start of its own side's turn (Unit.resetTurn).
+        if (u.type === 'mage') {
+          u.energy = Math.min(MAGE_MAX_ENERGY, (u.energy ?? MAGE_MAX_ENERGY) + MAGE_ENERGY_REGEN_PER_TURN);
+        }
       }
     });
     // The incoming side gets a full activation budget for its own turn.
@@ -4858,7 +5125,7 @@ export class AIPlayer {
    */
   private evaluateSpellsSmart(unit: Unit, actions: AIAction[]): void {
     const game = this.game;
-    const inv = game.inventory[this.player];
+    const inv = this.sideParts();
     const me = this.player;
     const allies = game.ownUnits(me).filter((a) => a.hp > 0);
     const enemies = game.ownUnits(otherPlayer(me));
@@ -5019,20 +5286,41 @@ export class AIPlayer {
    *  Invalidated by identity: a new terrain array means a new map. */
   private static blockedTerrain: Uint8Array | null = null;
   private static blockedTerrainSrc: unknown = null;
+  private static blockedConstructionsSrc: unknown = null;
+
+  /** Mage tower at (row,col) — range bonus / damage penalty for ranged units. */
+  private static isTowerCell(row: number, col: number): boolean {
+    return getTowers().some((t) => t.row === row && t.col === col);
+  }
+
+  /** River water at (row,col); bridges are crossings, not water. */
+  private static isRiverCell(row: number, col: number): boolean {
+    return getTerrain().some((t) => t.row === row && t.col === col && t.type === 'river');
+  }
 
   private static isBlockedTerrain(row: number, col: number): boolean {
     const terrain = getTerrain();
-    if (AIPlayer.blockedTerrainSrc !== terrain || AIPlayer.blockedTerrain === null) {
+    const constructions = getConstructions();
+    if (
+      AIPlayer.blockedTerrainSrc !== terrain ||
+      AIPlayer.blockedConstructionsSrc !== constructions ||
+      AIPlayer.blockedTerrain === null
+    ) {
       const map = new Uint8Array(ROWS * COLS);
       for (const t of terrain) {
-        // Only river and mountain block movement (see Board.isFree). A cell is
-        // typed EITHER 'bridge' OR 'river', never both (main.ts builds it that
-        // way), so bridges simply never appear here.
-        if (t.type !== 'river' && t.type !== 'mountain') continue;
+        // River, mountain and catapult boulders block movement (see
+        // Board.isFree). A cell is typed EITHER 'bridge' OR 'river', never
+        // both, so bridges simply never appear here.
+        if (t.type !== 'river' && t.type !== 'mountain' && t.type !== 'rock') continue;
         if (t.row >= 0 && t.row < ROWS && t.col >= 0 && t.col < COLS) map[t.row * COLS + t.col] = 1;
+      }
+      // Unfinished tower/bridge sites are impassable too.
+      for (const c of constructions) {
+        if (c.row >= 0 && c.row < ROWS && c.col >= 0 && c.col < COLS) map[c.row * COLS + c.col] = 1;
       }
       AIPlayer.blockedTerrain = map;
       AIPlayer.blockedTerrainSrc = terrain;
+      AIPlayer.blockedConstructionsSrc = constructions;
     }
     if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return true;
     return AIPlayer.blockedTerrain[row * COLS + col] === 1;

@@ -29,6 +29,8 @@ import {
   getCastleP1Col,
   getCastleP2Col,
   getAllRuins,
+  getBridgeDurability,
+  getConstructions,
   getTerrain,
   getTowers,
   type BeamDifficultyConfig,
@@ -72,6 +74,13 @@ function toSerializedUnit(u: Unit, player1Bottom: boolean): SerializedUnit {
       ? { name: u.armorGear.name, icon: u.armorGear.icon, amount: u.armorGear.amount }
       : null,
     backpack: { ...u.backpack },
+    // Wards and mage energy change what a hit actually does (a warded unit
+    // takes 0, its mage pays or dies) — without them the search planned
+    // "kills" on shielded units that the real game then absorbed.
+    wardedBy: u.wardedBy ?? null,
+    ...(u.type === 'mage'
+      ? { energy: u.energy, maxEnergy: u.maxEnergy, warding: [...(u.warding ?? [])] }
+      : {}),
   };
 }
 
@@ -110,15 +119,32 @@ export function snapshotGameState(game: AIGameAPI): GameState {
     ...area,
     top: flipRow(area.top + area.height - 1, player1Bottom),
   });
-  const ruins = ruinsAreas[0] ? flipRuinsArea(ruinsAreas[0]) : { top: 0, left: 0, width: 0, height: 0 };
-  const ruins2 = ruinsAreas[1] ? flipRuinsArea(ruinsAreas[1]) : { top: 0, left: 0, width: 0, height: 0 };
+  // Ruins are scenery only now (Board.inRuins is false everywhere), so the
+  // search must not see a searchable rectangle there.
+  void ruinsAreas;
+  void flipRuinsArea;
+  const ruins = { top: 0, left: 0, width: 0, height: 0 };
+  const ruins2 = { top: 0, left: 0, width: 0, height: 0 };
+
+  // Unfinished build sites are impassable and bridges have hit points — the
+  // search has to see both or it plans moves through sites that will fail.
+  const constructions = getConstructions().map((c) => ({ ...c, row: flipRow(c.row, player1Bottom) }));
+  const bridgeDurability: Record<string, number> = {};
+  for (const [key, hp] of Object.entries(getBridgeDurability())) {
+    const [r, c] = key.split(',').map(Number);
+    bridgeDurability[`${flipRow(r!, player1Bottom)},${c}`] = hp;
+  }
 
   const state = createInitialState({
     mode: 'ai',
     seed: 1,
     units,
-    castleP1Col: player1Bottom ? getCastleP2Col() : getCastleP1Col(),
-    castleP2Col: player1Bottom ? getCastleP1Col() : getCastleP2Col(),
+    constructions,
+    bridgeDurability,
+    // Flipping rows doesn't change which castle belongs to whom: P1's castle
+    // stays at castleP1Col, it just moves to the top rows like P1's units.
+    castleP1Col: getCastleP1Col(),
+    castleP2Col: getCastleP2Col(),
     towers,
     ruins,
     ruins2,
