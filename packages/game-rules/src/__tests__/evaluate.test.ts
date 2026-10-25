@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '../apply.js';
-import { evaluate, unitValue, W } from '../evaluate.js';
+import { FEATURES, evalFeatures, evaluate, unitValue, W } from '../evaluate.js';
 import type { SerializedUnit } from '../save.js';
 import type { GameState } from '../state.js';
 import { UNIT_TYPES, emptyBackpack } from '../constants.js';
@@ -219,5 +219,59 @@ describe('evaluate()', () => {
       const delta = evaluate(closer, 1) - evaluate(far, 1);
       expect(Math.abs(delta)).toBeLessThan(3000);
     });
+  });
+});
+
+describe('mages and wards in evaluate()', () => {
+  const knight = () => mkUnit({ id: 1, player: 1, type: 'knight', row: 10, col: 10 });
+  const mage = (energy: number) =>
+    mkUnit({ id: 2, player: 2, type: 'mage', row: 10, col: 13, energy, maxEnergy: 20 });
+
+  it('prices in the enemy mage regenerating +5 energy before it acts', () => {
+    // Mage at 2 energy while it is MY move will have 7 on its turn; the same
+    // board with the mage already at 7 on ITS move must score the same threat.
+    const mineToMove = startState([knight(), mage(2)]);
+    mineToMove.currentPlayer = 1;
+    const theirsToMove = startState([knight(), mage(7)]);
+    theirsToMove.currentPlayer = 2;
+    const a = evalFeatures(mineToMove, 1);
+    const b = evalFeatures(theirsToMove, 1);
+    for (const name of FEATURES) {
+      if (name.startsWith('threat.') || name.startsWith('retreat.')) {
+        const i = FEATURES.indexOf(name);
+        expect(a[i]).toBeCloseTo(b[i]!, 6);
+      }
+    }
+  });
+
+  it('a ward only protects while the warding mage can pay for the hit', () => {
+    const mk = (energy: number) =>
+      startState([
+        mkUnit({ id: 1, player: 1, type: 'knight', row: 10, col: 10, wardedBy: 4 }),
+        mkUnit({ id: 4, player: 1, type: 'mage', row: 9, col: 9, energy, maxEnergy: 20 }),
+        mkUnit({ id: 3, player: 2, type: 'knight', row: 10, col: 11 }),
+      ]);
+    const rich = mk(20);
+    const poor = mk(0);
+    rich.currentPlayer = 1;
+    poor.currentPlayer = 1;
+    const i = FEATURES.indexOf('threat.perDamagePointTaken');
+    // 20 energy absorbs the knight's 5; 0 energy can't, so the hit lands (and
+    // would kill the mage). perDamagePointTaken is negative: less taken = higher.
+    expect(evalFeatures(rich, 1)[i]!).toBeGreaterThan(evalFeatures(poor, 1)[i]!);
+  });
+
+  it('a tower by the river is worth more than one far behind the lines', () => {
+    const st = startState([knight()]);
+    const river = st.terrain.find((t) => t.type === 'river');
+    if (!river) return; // map without a river: nothing to assert
+    const near = startState([mkUnit({ id: 1, player: 1, type: 'knight', row: river.row - 2, col: river.col })]);
+    near.terrain = st.terrain;
+    near.constructions = [{ row: river.row - 1, col: river.col, kind: 'tower', progress: 2 }];
+    const far = startState([mkUnit({ id: 1, player: 1, type: 'knight', row: 1, col: 1 })]);
+    far.terrain = st.terrain;
+    far.constructions = [{ row: 0, col: 0, kind: 'tower', progress: 2 }];
+    const i = FEATURES.indexOf('material.towerStake');
+    expect(evalFeatures(near, 1)[i]!).toBeGreaterThan(evalFeatures(far, 1)[i]!);
   });
 });

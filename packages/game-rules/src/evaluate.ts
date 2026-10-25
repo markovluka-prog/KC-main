@@ -29,7 +29,7 @@
 import RAW_WEIGHTS from './ai-weights.json' with { type: 'json' };
 import CHANCE_RAW from './chance-weights.json' with { type: 'json' };
 import { castleColFor, castleRowFor, inCastleZone } from './apply.js';
-import { ARMORS, COLS, ROWS, WEAPONS, BUILD_WORK_TOTAL } from './constants.js';
+import { ARMORS, COLS, ROWS, WEAPONS, BUILD_WORK_TOTAL, MAGE_ENERGY_REGEN_PER_TURN, MAGE_MAX_ENERGY } from './constants.js';
 import { TOWER_DAMAGE_FACTOR } from './combat.js';
 import { applyFacingDamage } from './facing.js';
 import { archerRadiusFor, catapultMaxRangeFor, CATAPULT_MIN_RANGE, CROSSBOW_PIERCE_RANGE } from './moves.js';
@@ -381,6 +381,17 @@ function isRanged(type: string): boolean {
 }
 
 /**
+ * Energy a mage will actually have when it acts. A side's mages regenerate at
+ * the START of that side's turn (apply.ts endTurn), so while it is the other
+ * side's move the static energy understates what they strike with next turn.
+ */
+function mageEnergy(state: GameState, m: SerializedUnit): number {
+  const e = m.energy ?? 0;
+  if (m.player === state.currentPlayer) return e;
+  return Math.min(m.maxEnergy ?? MAGE_MAX_ENERGY, e + MAGE_ENERGY_REGEN_PER_TURN);
+}
+
+/**
  * Raw damage `a` can deal to `t` from where it stands right now (before
  * armor), or -1 when the attack rules don't let it reach. Mirrors
  * generateAttackActions/generateMageActions; the mage hits for whatever
@@ -411,7 +422,7 @@ function hitDamage(state: GameState, a: SerializedUnit, t: SerializedUnit, aOnTo
       ok = dr + dc >= CATAPULT_MIN_RANGE && dr + dc <= catapultMaxRangeFor(aOnTower);
       break;
     case 'mage':
-      return Math.max(-1, applyFacingDamage((a.energy ?? 0) - cheb, t, a.row, a.col));
+      return Math.max(-1, applyFacingDamage(mageEnergy(state, a) - cheb, t, a.row, a.col));
     default:
       ok = dr + dc === 1;
   }
@@ -447,7 +458,7 @@ function reachDamage(state: GameState, a: SerializedUnit, t: SerializedUnit, aOn
       reach = catapultMaxRangeFor(aOnTower);
       break;
     case 'mage':
-      return Math.max(-1, (a.energy ?? 0) - Math.max(0, cheb - a.maxMoves));
+      return Math.max(-1, mageEnergy(state, a) - Math.max(0, cheb - a.maxMoves));
     default:
       reach = 1;
   }
@@ -459,8 +470,51 @@ function reachDamage(state: GameState, a: SerializedUnit, t: SerializedUnit, aOn
   return dmg;
 }
 
+const RIVER_DIST_CACHE = new WeakMap<object, Uint8Array>();
+
+/** Manhattan distance from every cell to the nearest river/bridge cell (cached per terrain). */
+function riverDistance(state: GameState): Uint8Array {
+  let d = RIVER_DIST_CACHE.get(state.terrain);
+  if (d) return d;
+  d = new Uint8Array(COLS * ROWS).fill(255);
+  const q: number[] = [];
+  for (const t of state.terrain) {
+    if ((t.type === 'river' || t.type === 'bridge') && t.row >= 0 && t.row < ROWS && t.col >= 0 && t.col < COLS) {
+      d[t.row * COLS + t.col] = 0;
+      q.push(t.row * COLS + t.col);
+    }
+  }
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h]!;
+    const r = (i / COLS) | 0;
+    const c = i % COLS;
+    const nd = d[i]! + 1;
+    for (const j of [r > 0 ? i - COLS : -1, r < ROWS - 1 ? i + COLS : -1, c > 0 ? i - 1 : -1, c < COLS - 1 ? i + 1 : -1]) {
+      if (j >= 0 && d[j]! > nd) {
+        d[j] = nd;
+        q.push(j);
+      }
+    }
+  }
+  RIVER_DIST_CACHE.set(state.terrain, d);
+  return d;
+}
+
+/**
+ * How much a tower here is worth: a tower is only useful where fights happen —
+ * the river line and its bridges. One next to a home castle (or any rear cell)
+ * guards nothing, so it earns nothing.
+ */
+function towerSiteWeight(state: GameState, row: number, col: number): number {
+  const d = riverDistance(state)[row * COLS + col]!;
+  if (d <= 2) return 1;
+  if (d <= 4) return 0.5;
+  if (d <= 6) return 0.15;
+  return 0;
+}
+
 /** Ids of living mages, refreshed per evalFeatures() call (ward checks). */
-const LIVE_MAGES = new Set<number>();
+const LIVE_MAGES = new Map<number, number>();
 
 // Per-unit scratch for the fused pair pass in evalFeatures (no per-call allocation).
 let MIN_DIST = new Float64Array(32);
@@ -489,8 +543,13 @@ function growPairBuffers(n: number): void {
 }
 
 function afterArmor(state: GameState, raw: number, t: SerializedUnit): number {
-  // A ward from a living mage absorbs the whole hit (the mage pays energy).
-  if (t.wardedBy && LIVE_MAGES.has(t.wardedBy)) return 0;
+  // A ward absorbs the whole hit, paid 1:1 from the warding mage's energy. If
+  // that energy is short the unit is still spared but the MAGE dies
+  // (apply.ts absorbWithWard), so count the hit as landing.
+  if (t.wardedBy) {
+    const e = LIVE_MAGES.get(t.wardedBy);
+    if (e !== undefined && e >= raw) return 0;
+  }
   let dmg = Math.max(0, raw - t.armor);
   if (state.shieldTurns[t.player] > 0) dmg = Math.max(0, dmg - 2);
   return dmg;
@@ -512,7 +571,7 @@ export function evalFeatures(state: GameState, me: Player, out: Float64Array = n
     return false;
   };
   LIVE_MAGES.clear();
-  for (const u of state.units) if (u.type === 'mage' && u.hp > 0) LIVE_MAGES.add(u.id);
+  for (const u of state.units) if (u.type === 'mage' && u.hp > 0) LIVE_MAGES.set(u.id, mageEnergy(state, u));
 
   for (const u of state.units) {
     if (u.hp <= 0) continue;
@@ -530,7 +589,9 @@ export function evalFeatures(state: GameState, me: Player, out: Float64Array = n
   // as a fraction of BUILD_WORK_TOTAL, finished = 1) to the side with the
   // nearest unit within 3 cells, so starting, continuing and completing a
   // tower each raise the score.
-  const credit = (r: number, c: number, frac: number): void => {
+  const credit = (r: number, c: number, fracRaw: number): void => {
+    const frac = fracRaw * towerSiteWeight(state, r, c);
+    if (frac === 0) return;
     let best = 4, side = 0;
     for (const u of state.units) {
       if (u.hp <= 0) continue;

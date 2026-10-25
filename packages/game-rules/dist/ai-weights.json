@@ -36,7 +36,7 @@
             "mage": 900
         },
         "onTower": 3000,
-        "towerStake": 0,
+        "towerStake": 2500,
         "wipeout": 100000,
         "perEnergy": 0
     },
