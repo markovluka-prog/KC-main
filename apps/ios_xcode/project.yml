@@ -1,0 +1,36 @@
+# Проект генерируется командой `xcodegen generate` (см. tool/run_simulator.sh).
+name: KnightsCastles
+options:
+  bundleIdPrefix: com.markovluka
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  KnightsCastles:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      # Собранная веб-игра (создаёт tool/sync_web.sh): кладётся в бандл папкой «www».
+      - path: Resources/www
+        type: folder
+        buildPhase: resources
+        optional: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.markovluka.knightsandcastles
+        PRODUCT_NAME: KnightsCastles
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/Info.plist
+        DEVELOPMENT_TEAM: ""   # для App Store: свой Team ID в Xcode (Signing & Capabilities)
