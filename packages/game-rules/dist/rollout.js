@@ -14,7 +14,7 @@
  * every applyAction draws from one seeded Rng.
  */
 import { endTurn } from './apply.js';
-import { candidatePlans } from './beam.js';
+import { candidatePlans, shotBonus } from './beam.js';
 import { evaluate, unitValue } from './evaluate.js';
 import { greedyTurn } from './greedy.js';
 import { mulberry32 } from './rng.js';
@@ -125,7 +125,7 @@ export function rolloutFirstPass(root, me, options, slice, slices) {
         const plan = plans[i];
         const score = plan.state.winner !== null
             ? (plan.state.winner === me ? 1 : -1) * (DECIDED + 1)
-            : firstSampleValue(endTurn(plan.state), me, options);
+            : firstSampleValue(endTurn(plan.state), me, options) + shotBonus(plan.actions, plan.state, me);
         out.push({ index: i, score });
     }
     return out;
@@ -161,10 +161,10 @@ export function planTurnRolloutSlice(root, me, options, slice, slices, finalists
         const score = plan.state.winner !== null
             ? (plan.state.winner === me ? 1 : -1) * (DECIDED + 1)
             : first
-                ? finishSampledValue(endTurn(plan.state), me, options, first.get(i))
+                ? finishSampledValue(endTurn(plan.state), me, options, first.get(i)) + shotBonus(plan.actions, plan.state, me)
                 : options.replies
-                    ? replyMinimax(endTurn(plan.state), me, options, best.score)
-                    : sampledValue(endTurn(plan.state), me, options);
+                    ? replyMinimax(endTurn(plan.state), me, options, best.score) + shotBonus(plan.actions, plan.state, me)
+                    : sampledValue(endTurn(plan.state), me, options) + shotBonus(plan.actions, plan.state, me);
         if (score > best.score)
             best = { index: i, score, actions: plan.actions };
     }

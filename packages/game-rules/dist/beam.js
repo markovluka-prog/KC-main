@@ -97,6 +97,28 @@ function pickWithNoise(sorted, k, noiseChance, noiseTopK, rng) {
  * at ANY depth (not just the final one — a plan that peaks early and then
  * only gets worse must not lose to a deeper-but-worse one).
  */
+/**
+ * A mage should shoot whenever it can — even for 1 damage. The static
+ * evaluation can't see "a shot was fired this turn", and a step toward the
+ * enemy is worth more to it than a chip, so each mage-attack in a plan earns
+ * this bonus on top of the position score (beam and rollout both add it).
+ */
+export const MAGE_SHOT_BONUS = 5500;
+/** The shot only counts while the mage stays able to pay for a ward afterwards. */
+const SHOT_KEEPS_ENERGY = 5;
+export function shotBonus(actions, state, me) {
+    let n = 0;
+    for (const a of actions)
+        if (a.kind === 'mage-attack')
+            n++;
+    if (n === 0)
+        return 0;
+    for (const u of state.units) {
+        if (u.player === me && u.type === 'mage' && u.hp > 0 && (u.energy ?? 0) < SHOT_KEEPS_ENERGY)
+            return 0;
+    }
+    return n * MAGE_SHOT_BONUS;
+}
 function searchPlans(root, me, options) {
     const maxDepth = options.maxDepth ?? MAX_PLAN_DEPTH;
     const noiseChance = options.noiseChance ?? 0;
@@ -132,10 +154,11 @@ function searchPlans(root, me, options) {
                     const result = applyAction(plan.state, action, rng);
                     if (!result.ok)
                         continue; // filtered-but-illegal shouldn't happen; skip defensively
+                    const actions = [...plan.actions, action];
                     next.push({
-                        actions: [...plan.actions, action],
+                        actions,
                         state: result.value,
-                        score: evaluate(result.value, me, options.weights),
+                        score: evaluate(result.value, me, options.weights) + shotBonus(actions, result.value, me),
                     });
                 }
             }

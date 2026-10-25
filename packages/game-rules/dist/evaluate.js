@@ -466,6 +466,8 @@ function growPairBuffers(n) {
     OPP_TOWER = new Uint8Array(n);
     OPP_VAL = new Float64Array(n);
 }
+/** Mage energy worth hoarding for wards/heals; above this it is free to shoot with. */
+const ENERGY_RESERVE = 8;
 /** Share of a ward-absorbed hit still counted as threat (it drains the mage). */
 const WARD_THREAT_SHARE = 0.35;
 function afterArmor(state, raw, t) {
@@ -515,7 +517,10 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         out[FI_material_perHp] += sign * u.hp;
         out[FI_material_perArmor] += sign * u.armor;
         out[FI_material_perDamage] += sign * u.damage;
-        out[FI_material_perEnergy] += sign * (u.energy ?? 0);
+        // Only the first ENERGY_RESERVE points of a mage's energy are worth
+        // keeping (they pay for wards and heals); anything above is spendable, so a
+        // shot — even for 1 damage — costs nothing while the mage stays stocked.
+        out[FI_material_perEnergy] += sign * Math.min(u.energy ?? 0, ENERGY_RESERVE);
         out[TYPE_F[u.type] ?? TYPE_F.archer] += sign;
         if (onTower(u))
             out[FI_material_onTower] += sign;

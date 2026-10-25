@@ -62,6 +62,21 @@ export interface BeamSearchOptions {
  */
 export declare function stateKey(state: GameState): string;
 /**
+ * Core beam search loop shared by `planTurn` and `planTurnWithReply`. Walks
+ * `me`'s turn depth by depth, returns every surviving plan sorted best-first
+ * (deduplicated by `stateKey`, width-capped), plus the single best plan seen
+ * at ANY depth (not just the final one — a plan that peaks early and then
+ * only gets worse must not lose to a deeper-but-worse one).
+ */
+/**
+ * A mage should shoot whenever it can — even for 1 damage. The static
+ * evaluation can't see "a shot was fired this turn", and a step toward the
+ * enemy is worth more to it than a chip, so each mage-attack in a plan earns
+ * this bonus on top of the position score (beam and rollout both add it).
+ */
+export declare const MAGE_SHOT_BONUS = 5500;
+export declare function shotBonus(actions: readonly ServerAction[], state: GameState, me: Player): number;
+/**
  * Beam search over one player's turn. Returns the action sequence
  * (`ServerAction[]`) with the best resulting `evaluate(finalState, me)` found
  * — a "stop here" option is implicitly included at every depth (a plan that
