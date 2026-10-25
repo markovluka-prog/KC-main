@@ -23,6 +23,7 @@ import { type ServerAction } from './apply.js';
 import { type GameState } from './state.js';
 import type { Player } from './types.js';
 export { boardFromState } from './board-state.js';
+import { boardFromState } from './board-state.js';
 /**
  * Every legal action `unit` could take this instant, spanning move, attack,
  * and the economy/support actions (craft/craft-armor/castle-heal/build/mage). Skips anything the unit can't afford/reach so callers don't
@@ -33,7 +34,7 @@ export { boardFromState } from './board-state.js';
  * the unit, so they're only offered when `movesLeft >= 1` — same gate
  * `applyAction` itself enforces.
  */
-export declare function generateActionsForUnit(state: GameState, unitId: number): ServerAction[];
+export declare function generateActionsForUnit(state: GameState, unitId: number, sharedBoard?: ReturnType<typeof boardFromState>): ServerAction[];
 /** Every unit belonging to `player` that can still act this turn (not done, alive). */
 export declare function actableUnitIds(state: GameState, player: Player): number[];
 /**

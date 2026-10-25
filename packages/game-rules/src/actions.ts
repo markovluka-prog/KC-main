@@ -20,6 +20,7 @@
  * silently stalling turn after turn once a hidden pickup got claimed.
  */
 
+import { turnCost } from './facing.js';
 import { canEquipGear, type ServerAction } from './apply.js';
 import { generateAllActions } from './moves.js';
 import { inCastleZone, castleColFor, castleRowFor } from './apply.js';
@@ -46,13 +47,21 @@ const ORTHO_DIRS: ReadonlyArray<readonly [number, number]> = [
 ];
 
 export { boardFromState } from './board-state.js';
-import { boardFromState, toUnitState } from './board-state.js';
+import { boardFromState, boardFromStateScratch, toUnitState } from './board-state.js';
 
 /** True if `backpack` holds at least `recipe`'s counts of every part — crafting
- * always spends the crafting unit's OWN backpack, not a shared per-player pool. */
+ * always spends the crafting unit's OWN backpack, not a shared per-player pool.
+ * Recipes are pre-split into [part, n] pairs once (this runs per unit per
+ * recipe on every search node). */
+const RECIPE_ENTRIES = new WeakMap<object, Array<[PartName, number]>>();
 function canAffordFromBackpack(backpack: Backpack, recipe: Partial<Record<PartName, number>>): boolean {
-  for (const [part, n] of Object.entries(recipe)) {
-    if ((backpack[part as PartName] ?? 0) < (n ?? 0)) return false;
+  let entries = RECIPE_ENTRIES.get(recipe);
+  if (!entries) {
+    entries = Object.entries(recipe).map(([p, n]) => [p as PartName, n ?? 0]);
+    RECIPE_ENTRIES.set(recipe, entries);
+  }
+  for (const [part, n] of entries) {
+    if ((backpack[part] ?? 0) < n) return false;
   }
   return true;
 }
@@ -67,7 +76,11 @@ function canAffordFromBackpack(backpack: Backpack, recipe: Partial<Record<PartNa
  * the unit, so they're only offered when `movesLeft >= 1` — same gate
  * `applyAction` itself enforces.
  */
-export function generateActionsForUnit(state: GameState, unitId: number): ServerAction[] {
+export function generateActionsForUnit(
+  state: GameState,
+  unitId: number,
+  sharedBoard?: ReturnType<typeof boardFromState>,
+): ServerAction[] {
   const unit = state.units.find((u) => u.id === unitId && u.hp > 0);
   if (!unit) return [];
   if (unit.player !== state.currentPlayer) return [];
@@ -92,7 +105,7 @@ export function generateActionsForUnit(state: GameState, unitId: number): Server
   // produced plans the reducer refuses.
   if (!unit.activated && state.activatedCount >= MAX_ACTIVATIONS_PER_TURN) return [];
 
-  const board = boardFromState(state);
+  const board = sharedBoard ?? boardFromState(state);
   const actions: ServerAction[] = [];
 
   for (const a of generateAllActions(board, toUnitState(unit))) {
@@ -249,7 +262,18 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
     }
   }
 
-  return out;
+  // Aiming into the mage's own back half costs +1 move to turn round
+  // (facing.ts) — drop what it can't afford with the moves it has left.
+  const at = (x: ServerAction): { row: number; col: number } | null => {
+    if (x.kind === 'mage-attack') return { row: x.targetRow, col: x.targetCol };
+    if (x.kind === 'mage-burn-bridge') return { row: x.row, col: x.col };
+    if (x.kind === 'mage-drain') return alive.find((u) => u.id === x.targetUnitId) ?? null;
+    return null;
+  };
+  return out.filter((x) => {
+    const c = at(x);
+    return !c || mage.movesLeft >= 1 + turnCost(mage, c.row, c.col);
+  });
 }
 
 /** Every unit belonging to `player` that can still act this turn (not done, alive). */
@@ -265,8 +289,11 @@ export function actableUnitIds(state: GameState, player: Player): number[] {
  */
 export function generateActionsForPlayer(state: GameState, player: Player): ServerAction[] {
   const out: ServerAction[] = [];
+  // One board for every unit's generator, built in reused buffers: the board
+  // is finished with before this function returns.
+  const board = boardFromStateScratch(state);
   for (const id of actableUnitIds(state, player)) {
-    out.push(...generateActionsForUnit(state, id));
+    out.push(...generateActionsForUnit(state, id, board));
   }
   return out;
 }

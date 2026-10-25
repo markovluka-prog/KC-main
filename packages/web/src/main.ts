@@ -28,6 +28,9 @@ import {
   generateAttackActions,
   computeDamage as gameRulesComputeDamage,
   attackDamage,
+  applyFacingDamage,
+  facingToward,
+  turnCost,
   applyDamageToTarget,
   isContinuableSnapshot,
   validateSerializedUnit,
@@ -82,10 +85,11 @@ import { AssetStore } from './assets/loader.js';
 import { Unit } from './game/Unit.js';
 import { Board } from './game/Board.js';
 import { AIPlayer } from './game/ai.js';
+import { FfaBot } from './game/ffa-bot.js';
 import { ApiClient } from './api/client.js';
 import { isNativeAuthAvailable } from './net/auth-google.js';
 import { isAdminEmail } from './admin.js';
-import { sanitizeNickname } from './util/nickname.js';
+import { sanitizeNickname, sanitizeLobbyName } from './util/nickname.js';
 import { SupabaseMatchClient } from './net/supabase-match-client.js';
 import { t as tr, getLang, setLang, toggleLang, onLangChange } from './i18n.js';
 import {
@@ -113,6 +117,14 @@ import {
 } from './render/fx.js';
 import { COLORS } from './render/palette.js';
 import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
+
+/** AI personalities offered in the menu — keys match goap.ts PERSONALITIES. */
+const AI_PERSONAS = {
+  strategist: { icon: '♟️', name: 'Стратег', sub: 'руины, оружие, мост, штурм' },
+  berserker: { icon: '🪓', name: 'Берсерк', sub: 'бьёт армию, потом замок' },
+  conqueror: { icon: '🏰', name: 'Захватчик', sub: 'бежит к замку' },
+  survivor: { icon: '🛡️', name: 'Выживальщик', sub: 'копит силы, атакует с перевесом' },
+};
 
 (function () {
   "use strict";
@@ -337,6 +349,40 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
   }
 
   // toKey now imported from ./state/constants (Increment 1).
+
+  // ── 3–4 player free-for-all (mode 'ffa') ──────────────────────────────
+  // 3×3 castles in the four corners, clockwise from the top-left; player p
+  // starts in corner p-1 (with 3 players the bottom-left castle is neutral).
+  // Win: hold every castle at once. Hot-seat, or vs FfaBot (game/ffa-bot.ts); no online.
+  const FFA_CASTLE = 3;
+  const FFA_CORNERS = [
+    { row: 0, col: 0 },
+    { row: 0, col: COLS - FFA_CASTLE },
+    { row: ROWS - FFA_CASTLE, col: COLS - FFA_CASTLE },
+    { row: ROWS - FFA_CASTLE, col: 0 },
+  ];
+  const FFA_FACTIONS = ['blue', 'red', 'yellow', 'purple'];
+  const FFA_COLORS = ['#59a3ff', '#e35757', '#f2c94c', '#a56cf0'];
+  /** Lobby colour choices: faction (sprite set) → label key and CSS colour. */
+  const LOBBY_COLORS = [
+    { id: 'blue', label: 'Синий', hex: '#59a3ff' },
+    { id: 'red', label: 'Красный', hex: '#e35757' },
+    { id: 'yellow', label: 'Жёлтый', hex: '#f2c94c' },
+    { id: 'purple', label: 'Фиолетовый', hex: '#a56cf0' },
+  ];
+  const LOBBY_LEVELS = [
+    { id: 'easy', label: 'Слабый' },
+    { id: 'medium', label: 'Средний' },
+    { id: 'hard', label: 'Сложный' },
+  ];
+  const lobbyHex = (id) => (LOBBY_COLORS.find((c) => c.id === id) || LOBBY_COLORS[0]).hex;
+  /** Each side's 6 units: [type, steps out from the castle's inner corner (row, col)]. */
+  const FFA_ROSTER = [
+    ['knight', 0, 0], ['knight', 0, 1], ['cavalry', 1, 0],
+    ['archer', 1, 1], ['crossbow', 0, 2], ['mage', 2, 2],
+  ];
+  /** Share of a conquered nation — its top killers — that stays loyal. */
+  const FFA_LOYAL_SHARE = 0.3;
 
   function otherPlayer(player) {
     return player === 1 ? 2 : 1;
@@ -957,6 +1003,16 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.cameraShakeY = 0;
 
       this.ai = new AIPlayer(this, 2, 'medium');
+      this.ffaBot = new FfaBot(this);
+      this.ffaBotLevels = [];
+      this.ffaFactions = FFA_FACTIONS;
+      this.playerNames = null;
+      this._pendingLobby = null;
+      this.lobby = [
+        { name: 'Player', bot: false, level: 'medium', color: 'blue' },
+        { name: 'Bot', bot: true, level: 'medium', color: 'red' },
+      ];
+      this.lobbyError = '';
       // The AI now plans with a phase/goal strategy (see ai.ts computeStrategy);
       // the old learned Q-brain was removed because it never actually learned.
 
@@ -1213,8 +1269,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         // #5: during the AI's turn the human must not act for the bot. Block
         // in-game unit actions; menu/back/restart/surrender stay available.
         if (
-          this.mode === "ai" &&
-          this.currentPlayer === 2 &&
+          ((this.mode === "ai" && this.currentPlayer === 2) || this.isFfaBotTurn()) &&
           (action === "equip-weapon" ||
             action === "skip" ||
             action === "draw-part" ||
@@ -1524,6 +1579,20 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       // Menu action handler — document-level so sub-modals (outside #menuOverlay)
       // also bubble up correctly.
+      document.getElementById('playModalBody')?.addEventListener('keydown', (e) => {
+        const ke = e as KeyboardEvent;
+        if (ke.key === 'Enter' && (ke.target as Element | null)?.matches?.('[data-lobby="name"]')) {
+          ke.preventDefault();
+          this._lobbyStart();
+        }
+      });
+      const lobbyEvent = (event: Event, isInput: boolean) => {
+        const el = (event.target as Element | null)?.closest?.('[data-lobby]') as HTMLInputElement | null;
+        if (el) this._lobbyChange(el, isInput);
+      };
+      document.getElementById('playModalBody')?.addEventListener('input', (e) => lobbyEvent(e, true));
+      document.getElementById('playModalBody')?.addEventListener('change', (e) => lobbyEvent(e, false));
+
       document.addEventListener('click', (event) => {
         const target = event.target as Element;
 
@@ -1600,34 +1669,52 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           if (nextTask) { this._closeSubModals(); this.startMatch('ai', null, nextTask); }
           return;
         }
-        if (action === 'start-pvp') {
-          this.requestFullscreenIfNeeded();
-          this._closeSubModals();
-          this.showDraftScreen('pvp', null, null);
+        if (action === 'lobby-kind' || action === 'lobby-color' || action === 'lobby-level') {
+          this._lobbyPick(action.slice(6), Number(btn.dataset.i), String(btn.dataset.v));
           return;
         }
+        if (action === 'set-theme') {
+          const light = btn.dataset.v === 'light';
+          if (light) document.documentElement.setAttribute('data-theme', 'light');
+          else document.documentElement.removeAttribute('data-theme');
+          try { localStorage.setItem('kc-theme', light ? 'light' : 'dark'); } catch { /* private mode */ }
+          const body = document.getElementById('settingsModalBody');
+          if (body) body.innerHTML = this._buildSettingsModalHTML();
+          return;
+        }
+        if (action === 'lobby-add') { this._lobbyAdd(); return; }
+        if (action === 'lobby-remove') { this._lobbyRemove(Number(btn.dataset.i)); return; }
+        if (action === 'lobby-start') { this._lobbyStart(); return; }
         if (action === 'start-ai-easy') {
           this.requestFullscreenIfNeeded();
           this._closeSubModals();
-          this.showDraftScreen('ai', 'easy', null);
+          this.showDraftScreen('ai', this._withPersona('easy'), null);
           return;
         }
         if (action === 'start-ai-medium') {
           this.requestFullscreenIfNeeded();
           this._closeSubModals();
-          this.showDraftScreen('ai', 'medium', null);
+          this.showDraftScreen('ai', this._withPersona('medium'), null);
           return;
         }
         if (action === 'start-ai-hard') {
           this.requestFullscreenIfNeeded();
           this._closeSubModals();
-          this.showDraftScreen('ai', 'hard', null);
+          this.showDraftScreen('ai', this._withPersona('hard'), null);
+          return;
+        }
+        if (action === 'start-ai-chance') {
+          const raw = Number((document.getElementById('aiChanceInput') as HTMLInputElement | null)?.value);
+          const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : 100;
+          this.requestFullscreenIfNeeded();
+          this._closeSubModals();
+          this.showDraftScreen('ai', `chance:${pct}`, null);
           return;
         }
         if (action === 'start-ai-impossible') {
           this.requestFullscreenIfNeeded();
           this._closeSubModals();
-          this.showDraftScreen('ai', 'impossible', null);
+          this.showDraftScreen('ai', this._withPersona('impossible'), null);
           return;
         }
         if (action === 'play-online' || action === 'play-online-create') {
@@ -1815,6 +1902,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
     saveProgressNow() {
       if (this.online) return; // online matches are server-side, not localStorage
+      if (this.isFfa()) return; // 3–4 player matches aren't saved (the save format is 2-player)
       if (this.screen !== "game" || this.winner !== null) return;
       // Phase 2: writeSnapshot from @kc/game-rules handles storage + quotas.
       writeSnapshot(this.createSaveSnapshot());
@@ -1897,6 +1985,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
             : null,
           backpack: Object.assign({}, u.backpack),
           wardedBy: u.wardedBy ?? null,
+          facing: u.facing,
           ...(u.type === 'mage' ? { energy: u.energy, maxEnergy: u.maxEnergy, warding: u.warding.slice() } : {}),
         })),
         droppedBackpacks: this.droppedBackpacks.map((d) => ({
@@ -2147,6 +2236,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
     showPlayModal() {
       this._closeSubModals();
+      this._pendingLobby = null;
       const body = document.getElementById('playModalBody');
       if (body) body.innerHTML = this._buildPlayModalHTML();
       document.getElementById('playModal')?.classList.add('active');
@@ -2205,6 +2295,20 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>2. Когда защита = 0 → урон идёт в <strong>❤️ Здоровье</strong></p>
       <p>3. Здоровье = 0 → воин погибает</p>
       <p><em>Пример: Воин с 🛡4 ❤️3 получает 6 урона → Результат: 🛡0 ❤️1</em></p>
+
+      <h4>🎮 Как начать игру</h4>
+      <p>В меню «Играть → Играть самому» собирается партия на <strong>2–4 игрока</strong>: у каждого — никнейм (только английские буквы и цифры), <strong>человек или бот</strong>, свой <strong>цвет</strong> (повторов нет) и, для бота, уровень: <strong>слабый, средний или сложный</strong>. Игроков можно добавлять (＋) и убирать (✕). Нужен хотя бы один человек.</p>
+      <p>Двое — обычная партия 11 на 11. Трое или четверо — бой в углах поля, боты ходят сами.</p>
+
+      <h4>🏰 3–4 игрока</h4>
+      <p>Замки 3×3 в углах поля, у каждого по 6 воинов, ходы по кругу. Замок переходит к тому, чьи воины стоят в нём одни. <strong>Победа — все замки под вашим контролем.</strong> При 3 игроках четвёртый замок ничей.</p>
+      <p>Захватили чужой родной замок — к вам переходят воины этого народа, кроме <strong>30% лучших по убийствам</strong> (★ в таблице).</p>
+
+      <h4>👁 Направление взгляда</h4>
+      <p>Каждый воин смотрит в одну сторону (треугольник у края клетки). Клетки вокруг делятся на <strong>переднюю</strong> и <strong>заднюю</strong> половину, линия между ними — <strong>бок</strong>.</p>
+      <p>• Удар в <strong>спину</strong> — урон <strong>×2</strong>, в <strong>бок</strong> — <strong>×1.25</strong></p>
+      <p>• Шагнуть или ударить <strong>назад</strong> можно, но разворот стоит <strong>+1 ход</strong></p>
+      <p>• После шага воин смотрит туда, куда шёл; после удара с разворотом — на цель</p>
 
       <h4>🔄 Структура хода</h4>
       <p>• За один ход вы управляете <strong>до 3 воинов</strong></p>
@@ -2344,6 +2448,20 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       <p>3. Health = 0 → the warrior dies</p>
       <p><em>Example: a warrior with 🛡4 ❤️3 takes 6 damage → Result: 🛡0 ❤️1</em></p>
 
+      <h4>🎮 Starting a game</h4>
+      <p>Open “Play → Play yourself” to set up a match for <strong>2–4 players</strong>. Each has a nickname (English letters and digits only), is a <strong>human or a bot</strong>, picks a unique <strong>colour</strong> and, for bots, a level: <strong>easy, medium or hard</strong>. Add players with ＋ and remove them with ✕. At least one human is required.</p>
+      <p>Two players play the classic 11-vs-11 match. With three or four, the fight is in the corners of the map and the bots move on their own.</p>
+
+      <h4>🏰 3–4 players</h4>
+      <p>3×3 castles in the corners, 6 warriors each, turns go round the table. A castle belongs to whoever stands in it alone. <strong>Hold every castle to win.</strong> With 3 players the fourth castle starts free.</p>
+      <p>Take a nation's home castle and its warriors join you — except its <strong>top 30% killers</strong> (★ in the table).</p>
+
+      <h4>👁 Facing</h4>
+      <p>Every unit looks one way (the wedge on its cell edge). The cells around it split into a <strong>front</strong> and a <strong>back</strong> half; the line between them is its <strong>side</strong>.</p>
+      <p>• A hit in the <strong>back</strong> deals <strong>×2</strong>, in the <strong>side</strong> <strong>×1.25</strong></p>
+      <p>• Stepping or striking <strong>backwards</strong> is allowed, but turning round costs <strong>+1 move</strong></p>
+      <p>• After a step the unit faces where it walked; after a strike that turned it, its target</p>
+
       <h4>🔄 Turn structure</h4>
       <p>• On a turn you control <strong>up to 3 warriors</strong></p>
       <p>• If fewer than 3 remain — all of them act</p>
@@ -2472,7 +2590,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       return `
         <div class="submenu-section">
           <div class="rules" style="font-size:12px;line-height:1.55;color:var(--muted)">
-            <p>${tr('Средневековая пошаговая стратегия для 2 игроков на поле 20×20. Захвати пустой замок противника или вынуди его капитулировать.')}</p>
+            <p>${tr('Средневековая пошаговая стратегия для 2–4 игроков на поле 20×20. Захвати пустой замок противника или вынуди его капитулировать.')}</p>
           </div>
         </div>
         <div class="submenu-section">
@@ -2483,7 +2601,6 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     }
 
     _buildPlayModalHTML() {
-      const next = this.findNextStoryTask();
       let html = '';
 
       // Session score
@@ -2492,35 +2609,16 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         html += `<div class="session-score-badge">${tr('Счёт сессии:')} <strong style="color:var(--p1)">${sw1}</strong> — <strong style="color:var(--p2)">${sw2}</strong></div>`;
       }
 
-      // Campaign section
-      html += `<div class="submenu-section">`;
-      html += `<div class="submenu-label">${tr('Кампания')}</div>`;
-      if (next) {
-        const ch = STORY_CHAPTERS[next.ci];
-        const g  = ch && ch.games[next.gi];
-        const t  = g && g.tasks[next.ti];
-        const preset = (t && t.aiPreset && t.aiPreset.label) || '';
-        const name   = t ? this.escape(this.trName(t.name)) : tr('Следующий уровень');
-        html += `<div class="campaign-card" data-action="continue-story" role="button" tabindex="0" aria-label="${tr('Продолжить кампанию: {name}', { name })}">
-          <span class="campaign-card-icon" aria-hidden="true">⚔️</span>
-          <div class="campaign-card-info">
-            <div class="campaign-card-name">${name}</div>
-            <div class="campaign-card-meta">${tr('Глава {n}', { n: next.ci + 1 })}${preset ? ' · ' + this.escape(this.trName(preset)) : ''}</div>
-          </div>
-          <span style="color:var(--muted);font-size:14px">›</span>
-        </div>`;
-      } else {
-        html += `<div class="campaign-card" style="opacity:0.55;cursor:default">
-          <span class="campaign-card-icon">✅</span>
-          <div class="campaign-card-info">
-            <div class="campaign-card-name">${tr('Кампания пройдена')}</div>
-            <div class="campaign-card-meta">${tr('Все главы завершены')}</div>
-          </div>
-        </div>`;
-      }
+      // Campaign (story) is hidden from the UI for now; the "continue game"
+      // button stays so a saved match is never stranded.
       if (this.hasContinuableSave()) {
-        html += `<button class="btn restart" data-action="continue-save" style="width:100%">↩️ ${tr('Продолжить партию')}</button>`;
+        html += `<div class="submenu-section"><button class="btn restart" data-action="continue-save" style="width:100%">↩️ ${tr('Продолжить партию')}</button></div>`;
       }
+
+      // Solo section: the lobby (2–4 players)
+      html += `<div class="submenu-section">`;
+      html += `<div class="submenu-label">${tr('Играть самому')}</div>`;
+      html += this._buildLobbyHTML();
       html += `</div>`;
 
       // Online section
@@ -2532,76 +2630,147 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       </div>`;
       html += `</div>`;
 
-      // Solo section
-      html += `<div class="submenu-section">`;
-      html += `<div class="submenu-label">${tr('Играть самому')}</div>`;
-      html += `<div class="ai-diff-row">
-        <button class="ai-diff-btn diff-easy" data-action="start-ai-easy">
-          <span class="ai-diff-icon">🟢</span>
-          <span class="ai-diff-name">${tr('Слабый')}</span>
-          <span class="ai-diff-sub">${tr('Новичок')}</span>
-        </button>
-        <button class="ai-diff-btn diff-medium" data-action="start-ai-medium">
-          <span class="ai-diff-icon">🟡</span>
-          <span class="ai-diff-name">${tr('Средний')}</span>
-          <span class="ai-diff-sub">${tr('Боец')}</span>
-        </button>
-        <button class="ai-diff-btn diff-hard" data-action="start-ai-hard">
-          <span class="ai-diff-icon">🔴</span>
-          <span class="ai-diff-name">${tr('Сложный')}</span>
-          <span class="ai-diff-sub">${tr('Мастер')}</span>
-        </button>
-        <button class="ai-diff-btn diff-impossible" data-action="start-ai-impossible">
-          <span class="ai-diff-icon">⚫</span>
-          <span class="ai-diff-name">${tr('Невозможный')}</span>
-          <span class="ai-diff-sub">${tr('Легенда')}</span>
-        </button>
-      </div>`;
-      html += `<button class="btn" data-action="start-pvp" style="width:100%;text-align:center">👥 ${tr('2 Игрока — на одном устройстве')}</button>`;
-      html += `</div>`;
-
       return html;
     }
 
-    _buildSettingsModalHTML() {
-      const user = this.getCurrentUser();
-      const avatarLabel = user ? user.charAt(0).toUpperCase() : '👤';
-      const nameLabel   = user ? this.escape(user) : tr('Войти в аккаунт');
-      const subLabel    = user ? tr('аккаунт · нажмите для управления') : tr('нажмите для входа');
+    _buildLobbyHTML() {
+      const rows = this.lobby;
+      let html = '<div class="lobby">';
+      rows.forEach((pl, i) => {
+        const taken = new Set(rows.filter((_, j) => j !== i).map((x) => x.color));
+        const seg = (act, items, cur) =>
+          `<div class="lb-seg" role="group">${items.map((it) =>
+            `<button type="button" class="lb-seg-btn${it.id === cur ? ' on' : ''}" data-action="${act}" data-i="${i}" data-v="${it.id}" aria-pressed="${it.id === cur}">${it.html}</button>`).join('')}</div>`;
+        html += `<div class="lb-card" style="--lb:${lobbyHex(pl.color)}">
+          <div class="lb-top">
+            <span class="lb-badge" aria-hidden="true">${pl.bot ? '🤖' : '👤'}</span>
+            <input class="lb-name" data-lobby="name" data-i="${i}" value="${this.escape(pl.name)}" maxlength="12"
+              autocomplete="off" spellcheck="false" placeholder="Name" aria-label="${tr('Никнейм')}">
+            ${rows.length > 2 ? `<button type="button" class="lb-x" data-action="lobby-remove" data-i="${i}" aria-label="${tr('Убрать игрока')}">✕</button>` : ''}
+          </div>
+          <div class="lb-controls">
+            ${seg('lobby-kind', [{ id: 'human', html: '👤 ' + tr('Человек') }, { id: 'bot', html: '🤖 ' + tr('Бот') }], pl.bot ? 'bot' : 'human')}
+            <div class="lb-colors" role="group" aria-label="${tr('Цвет')}">
+              ${LOBBY_COLORS.map((c) => `<button type="button" class="lb-dot${c.id === pl.color ? ' on' : ''}" style="--c:${c.hex}"
+                data-action="lobby-color" data-i="${i}" data-v="${c.id}" title="${tr(c.label)}" aria-label="${tr(c.label)}"
+                aria-pressed="${c.id === pl.color}"${taken.has(c.id) ? ' disabled' : ''}></button>`).join('')}
+            </div>
+          </div>
+          ${pl.bot ? `<div class="lb-controls">${seg('lobby-level', LOBBY_LEVELS.map((l) => ({ id: l.id, html: tr(l.label) })), pl.level)}</div>` : ''}
+        </div>`;
+      });
+      html += '</div>';
+      if (this.lobbyError) html += `<div class="lb-error" id="lobbyError" role="alert">⚠ ${this.escape(this.lobbyError)}</div>`;
+      html += '<div class="lb-actions">';
+      if (rows.length < 4) html += `<button type="button" class="lb-add" data-action="lobby-add">＋ ${tr('Игрок')}</button>`;
+      html += `<button type="button" class="lb-play" data-action="lobby-start">▶ ${tr('Играть')}</button></div>`;
+      return html;
+    }
 
+    _renderLobby() {
+      const body = document.getElementById('playModalBody');
+      if (body) body.innerHTML = this._buildPlayModalHTML();
+    }
+
+    _lobbyAdd() {
+      if (this.lobby.length >= 4) return;
+      const used = new Set(this.lobby.map((x) => x.color));
+      const color = (LOBBY_COLORS.find((c) => !used.has(c.id)) || LOBBY_COLORS[0]).id;
+      this.lobby.push({ name: 'Bot' + (this.lobby.length), bot: true, level: 'medium', color });
+      this.lobbyError = '';
+      this._renderLobby();
+    }
+
+    _lobbyRemove(i) {
+      if (this.lobby.length <= 2 || !this.lobby[i]) return;
+      this.lobby.splice(i, 1);
+      this.lobbyError = '';
+      this._renderLobby();
+    }
+
+    _lobbyPick(what, i, v) {
+      const pl = this.lobby[i];
+      if (!pl) return;
+      if (what === 'kind') pl.bot = v === 'bot';
+      else if (what === 'color') {
+        if (this.lobby.some((x, j) => j !== i && x.color === v)) return;
+        pl.color = v;
+      } else if (what === 'level') pl.level = v;
+      this.lobbyError = '';
+      this._renderLobby();
+    }
+
+    /** One lobby control changed (name typed, type/colour/level picked). */
+    _lobbyChange(el, isInput) {
+      const i = Number(el.dataset.i);
+      const pl = this.lobby[i];
+      if (!pl) return;
+      const kind = el.dataset.lobby;
+      if (kind === 'name') {
+        pl.name = String(el.value);
+        return; // no re-render while typing
+      }
+      if (isInput) return;
+      if (kind === 'kind') pl.bot = el.value === 'bot';
+      else if (kind === 'color') {
+        if (!this.lobby.some((x, j) => j !== i && x.color === el.value)) pl.color = el.value;
+      } else if (kind === 'level') pl.level = el.value;
+      this.lobbyError = '';
+      this._renderLobby();
+    }
+
+    _lobbyStart() {
+      const rows = this.lobby;
+      const names = [];
+      for (const pl of rows) {
+        const res = sanitizeLobbyName(pl.name);
+        if (!res.ok) {
+          this.lobbyError = tr(res.reason);
+          this._renderLobby();
+          return;
+        }
+        names.push(res.value);
+      }
+      if (rows.every((x) => x.bot)) {
+        this.lobbyError = tr('Нужен хотя бы один человек.');
+        this._renderLobby();
+        return;
+      }
+      this.lobbyError = '';
+      this.requestFullscreenIfNeeded();
+      this._closeSubModals();
+      const n = rows.length;
+      if (n === 2) {
+        // Engine seats: player 1 = the human (if only one), player 2 = the bot.
+        const order = rows[0].bot && !rows[1].bot ? [1, 0] : [0, 1];
+        const seat = order.map((k) => ({ ...rows[k], name: names[k] }));
+        this._pendingLobby = { names: seat.map((x) => x.name), colors: seat.map((x) => x.color) };
+        if (seat[1].bot) this.showDraftScreen('ai', this._withPersona(seat[1].level), null);
+        else this.showDraftScreen('pvp', null, null);
+        return;
+      }
+      this._pendingLobby = { names, colors: rows.map((x) => x.color) };
+      this.ffaRequested = n;
+      this.ffaBotLevels = [null, ...rows.map((x) => (x.bot ? x.level : null))];
+      this.startMatch('ffa', null, null);
+    }
+
+    _buildSettingsModalHTML() {
       const isMuted = this.music && this.music.isMuted();
 
       let html = '';
 
-      // Account section
-      html += `<div class="submenu-section">`;
-      html += `<div class="submenu-label">${tr('Аккаунт')}</div>`;
-      html += `<div class="settings-account" data-action="show-account" id="settingsAccountBar" role="button" tabindex="0" aria-label="${user ? tr('Управление аккаунтом') : tr('Войти в аккаунт')}">
-        <div class="settings-account-avatar" aria-hidden="true">${avatarLabel}</div>
-        <div class="settings-account-info">
-          <div class="settings-account-name">${nameLabel}</div>
-          <div class="settings-account-sub">${subLabel}</div>
-        </div>
-        <span class="settings-account-arrow">›</span>
-      </div>`;
-      // Nickname editor — only for real (non-guest) accounts. The nickname is the
-      // display_name shown to opponents online; it's profanity-filtered on save.
-      if (this.authUser && !this.authUser.isGuest) {
-        const curNick = this.escape(this.authUser.displayName || '');
+      // Theme section
+      {
+        const light = document.documentElement.getAttribute('data-theme') === 'light';
         html += `<div class="submenu-section">`;
-        html += `<div class="submenu-label">${tr('Никнейм')}</div>`;
-        html += `<div style="display:flex;gap:8px;align-items:stretch">
-          <input class="auth-input" id="nickInput" type="text" maxlength="20" value="${curNick}" placeholder="${tr('Никнейм')}" aria-label="${tr('Никнейм')}" style="flex:1" />
-          <button class="btn primary" data-action="save-nickname" style="width:auto;padding:10px 14px">${tr('Сохранить')}</button>
+        html += `<div class="submenu-label">${tr('Тема игры')}</div>`;
+        html += `<div class="lb-seg" role="group" style="display:flex">
+          <button type="button" class="lb-seg-btn${light ? '' : ' on'}" data-action="set-theme" data-v="dark" aria-pressed="${!light}" style="flex:1;padding:9px 12px">🌙 ${tr('Тёмная')}</button>
+          <button type="button" class="lb-seg-btn${light ? ' on' : ''}" data-action="set-theme" data-v="light" aria-pressed="${light}" style="flex:1;padding:9px 12px">☀️ ${tr('Светлая')}</button>
         </div>`;
-        html += `<div class="auth-error" id="nickStatus" style="min-height:14px"></div>`;
         html += `</div>`;
       }
-
-      if (user) {
-        html += `<button class="btn danger" data-action="signout" style="width:100%;text-align:center;font-size:13px">${tr('Выйти из аккаунта')}</button>`;
-      }
-      html += `</div>`;
 
       // Sound section
       html += `<div class="submenu-section">`;
@@ -2610,14 +2779,6 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         <span class="mute-row-label">${isMuted ? '🔇 ' + tr('Звук выключен') : '🔊 ' + tr('Звук включён')}</span>
         <button class="mute-toggle-btn" data-action="toggle-mute-settings">${isMuted ? '🔇' : '🔊'}</button>
       </div>`;
-      html += `</div>`;
-
-      // Progress section
-      html += `<div class="submenu-section">`;
-      html += `<div class="submenu-label">${tr('Прогресс кампании')}</div>`;
-      html += `<div class="settings-progress-scroll">`;
-      html += this._buildProgressTreeHTML();
-      html += `</div>`;
       html += `</div>`;
 
       html += `<div style="text-align:center;font-size:11px;color:var(--muted);opacity:0.6;padding-top:4px">${tr('Рыцари и Замки')} · Luka Markov</div>`;
@@ -2928,6 +3089,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     // in-memory — it never touches localStorage or validateSnapshot.
     recordUndo() {
       if (this.online) return; // server-authoritative — no local undo online
+      if (this.isFfa()) return; // snapshots are 2-player only
       try {
         this.undoStack.push(this.createSaveSnapshot());
         if (this.undoStack.length > 40) this.undoStack.shift();
@@ -3205,6 +3367,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         unit.warding = Array.isArray(v.warding) ? v.warding.slice() : [];
       }
       unit.wardedBy = typeof v.wardedBy === "number" && v.wardedBy > 0 ? v.wardedBy : null;
+      if (v.facing) unit.facing = v.facing;
       return unit;
     }
 
@@ -3952,17 +4115,34 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     // FUNC-002 fix (Phase 1 plan): replace hardcoded "2 игрока" label with
     // a mode-aware label. Story is encoded as mode="ai" + currentStoryTask
     // set, so check the story task first.
+    /** "hard" → "hard@berserker" for the personality picked in the AI menu
+     *  (strategist = the default plan, no suffix). See goap.ts PERSONALITIES. */
+    _withPersona(difficulty) {
+      const sel = document.getElementById('aiPersonaSelect');
+      const p = sel && AI_PERSONAS[sel.value] ? sel.value : 'strategist';
+      this._aiPersona = p;
+      return p === 'strategist' ? difficulty : `${difficulty}@${p}`;
+    }
+
     getGameModeLabel() {
       if (this.currentStoryTask) {
         const t = this.currentStoryTask.task;
         if (t && t.name) return tr("Сюжет: {name}", { name: this.trName(t.name) });
         return tr("Сюжет");
       }
+      if (this.isFfa()) {
+        return tr("{n} игрока — захватите все замки", { n: this.ffaPlayers });
+      }
+      if (this.mode === "ai" && /^chance:/.test(String(this.aiDifficulty))) {
+        const est = this.ai && this.ai.chanceEstimate;
+        return tr("vs AI: свой шанс {n}%", { n: String(this.aiDifficulty).slice(7) }) +
+          (est !== null && est !== undefined ? " · " + tr("сейчас ≈{e}%", { e: Math.round(est * 100) }) : "");
+      }
       if (this.mode === "ai") {
         const labelMap = { easy: "Слабый", medium: "Средний", hard: "Сложный", impossible: "Невозможный" };
-        const diff = this.aiDifficulty && labelMap[this.aiDifficulty]
-          ? tr(labelMap[this.aiDifficulty])
-          : (this.aiDifficulty || "");
+        const [base, persona] = String(this.aiDifficulty || "").split("@");
+        let diff = base && labelMap[base] ? tr(labelMap[base]) : base;
+        if (persona && AI_PERSONAS[persona]) diff += " · " + tr(AI_PERSONAS[persona].name);
         return diff ? ("vs AI: " + diff) : "vs AI";
       }
       return tr("2 игрока");
@@ -3989,7 +4169,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.lastCustomPositions = customPositions || null;
 
       // Рандомизируем позиции замков, башен и руин (из пула 100 проверенных карт)
-      randomizeMapPositions(MAP_POOL[Math.floor(Math.random() * MAP_POOL.length)]);
+      if (mode === 'ffa') this.setupFfaMap();
+      else randomizeMapPositions(MAP_POOL[Math.floor(Math.random() * MAP_POOL.length)]);
 
       const gameMode = mode || "pvp";
       this.screen = "game";
@@ -4003,9 +4184,24 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         this.p2Faction = 'red';
         this.mapTheme  = 'land';
       }
+      {
+        const lb = !storyTask ? this._pendingLobby : null;
+        this._pendingLobby = null;
+        this.playerNames = lb ? lb.names : null;
+        this.ffaFactions = lb && gameMode === 'ffa' ? lb.colors : FFA_FACTIONS;
+        if (gameMode !== 'ffa') {
+          if (lb) { this.p1Faction = lb.colors[0]; this.p2Faction = lb.colors[1]; }
+          COLORS.p1 = lobbyHex(this.p1Faction);
+          COLORS.p2 = lobbyHex(this.p2Faction);
+          document.documentElement.style.setProperty('--p1', COLORS.p1);
+          document.documentElement.style.setProperty('--p2', COLORS.p2);
+        }
+        if (gameMode !== 'ffa') this.ffaBotLevels = [];
+      }
       this.aiDifficulty = gameMode === "ai" ? (difficulty || "medium") : null;
       this.player1Bottom = gameMode === "ai";
       this.board = new Board(this.player1Bottom, true, customPositions || undefined);
+      if (gameMode === 'ffa') this.setupFfaUnits(this.ffaRequested || 4);
       // BUGFIX: gear dropped by units slain in the PREVIOUS match used to
       // survive into this one (it sat on the same cells, ready to be picked up
       // by whoever walked there). Every match starts with a clean board.
@@ -4021,8 +4217,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.turnNumber = 1;
       this.message = "";
       this.lastEvent = "";
-      this.shieldTurns = { 1: 0, 2: 0 };
-      this.damageBuff = { 1: 0, 2: 0 };
+      this.shieldTurns = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      this.damageBuff = { 1: 0, 2: 0, 3: 0, 4: 0 };
       this.tutorialMode = false;
       this.tutorialStep = 0;
       this.pendingWeaponEquip = null;
@@ -4203,7 +4399,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       if (this.screen !== "game") {
         return;
       }
-      if (this.mode === "ai" && this.currentPlayer === 2) {
+      if ((this.mode === "ai" && this.currentPlayer === 2) || this.isFfaBotTurn()) {
         return;
       }
       if (this.onlineInputLocked()) {
@@ -4534,6 +4730,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         });
       }
 
+      // A step leaves the unit facing the way it walked (facing.ts).
+      this.selectedUnit.facing = facingToward(
+        this.selectedUnit.row, this.selectedUnit.col, action.row, action.col, this.selectedUnit.facing,
+      );
       // Start smooth movement animation
       this.selectedUnit.startMoveTo(action.row, action.col);
       this.selectedUnit.row = action.row;
@@ -4655,8 +4855,14 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         });
       }
 
+      // Striking into its own back half made the unit turn (the +1 is already
+      // in action.cost); a jump also ends facing the victim. See facing.ts.
+      const turnedToStrike = turnCost(this.selectedUnit, action.targetRow, action.targetCol) > 0;
       if (isBridgeTarget) {
         this.selectedUnit.movesLeft -= action.cost;
+        if (turnedToStrike) {
+          this.selectedUnit.facing = facingToward(this.selectedUnit.row, this.selectedUnit.col, action.targetRow, action.targetCol, this.selectedUnit.facing);
+        }
 
         const attackerX = this.selectedUnit.col * CELL_SIZE + CELL_SIZE / 2;
         const attackerY = this.selectedUnit.row * CELL_SIZE + CELL_SIZE / 2;
@@ -4731,6 +4937,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       if (!warded) applyDamageToTarget(target, damage);
 
       this.selectedUnit.movesLeft -= action.cost;
+      if (turnedToStrike || action.mode === "jump" || action.mode === "l-attack") {
+        this.selectedUnit.facing = facingToward(this.selectedUnit.row, this.selectedUnit.col, target.row, target.col, this.selectedUnit.facing);
+      }
 
       const attackerX = this.selectedUnit.col * CELL_SIZE + CELL_SIZE / 2;
       const attackerY = this.selectedUnit.row * CELL_SIZE + CELL_SIZE / 2;
@@ -4775,6 +4984,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         this.lastEvent += " " + tr("{name} повержен.", { name: this.trName(target.name) });
         // Drop the slain unit's gear onto its cell so it can be picked up.
         this.dropUnitGear(target);
+        this.creditKill(this.selectedUnit, target);
         target.startDeath();
         this.createExplosion(targetX, targetY, "#666", 8);
         this.createExplosion(targetX, targetY, "#ffffff", 4);
@@ -4871,6 +5081,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         '#a0e0ff',
       );
 
+      if (turnCost(attacker, action.targetRow, action.targetCol) > 0) {
+        attacker.facing = facingToward(attacker.row, attacker.col, action.targetRow, action.targetCol, attacker.facing);
+      }
       attacker.movesLeft -= action.cost;
 
       const names = [];
@@ -4899,6 +5112,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
         if (target.hp <= 0) {
           this.dropUnitGear(target);
+          this.creditKill(attacker, target);
           target.startDeath();
           this.createExplosion(targetX, targetY, "#666", 8);
           this.createExplosion(targetX, targetY, "#ffffff", 4);
@@ -4967,6 +5181,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     
     isUnitInOwnCastle(unit) {
       if (!unit) return false;
+      if (this.isFfa()) {
+        const i = this.ffaCastleAt(unit.row, unit.col);
+        return i >= 0 && this.ffaOwners[i] === unit.player;
+      }
       
       // Определяем зону замка для игрока
       const castleCol = unit.player === 1 ? getCastleP1Col() : getCastleP2Col();
@@ -5090,7 +5308,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         this.damageBuff[ending] -= 1;
       }
 
-      this.currentPlayer = otherPlayer(ending);
+      this.currentPlayer = this.isFfa() ? this.nextFfaPlayer(ending) : otherPlayer(ending);
       this.turnNumber += 1;
       this.startTurn();
     }
@@ -5107,7 +5325,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     /** Esc handler: cancel aiming, else deselect. Returns true if anything changed. */
     cancelSelection() {
       if (this.winner !== null || this.pendingWeaponEquip) return false;
-      if (this.mode === "ai" && this.currentPlayer === 2) return false;
+      if ((this.mode === "ai" && this.currentPlayer === 2) || this.isFfaBotTurn()) return false;
       if (this.onlineInputLocked()) return false;
       const unit = this.selectedUnit;
       if (!unit) return false;
@@ -5142,7 +5360,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         return;
       }
       if (!this.selectedUnit) return;
-      if (this.mode === "ai" && this.currentPlayer === 2 && !fromAI) return;
+      if (((this.mode === "ai" && this.currentPlayer === 2) || this.isFfaBotTurn()) && !fromAI) return;
       // Online skip needs no server action — the unit simply doesn't act this
       // turn. Marking it done locally lets the turn auto-end (and flush) just
       // like offline; the server's end-turn resets every unit anyway.
@@ -5871,6 +6089,28 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         if (this.net) this.net.send({ kind: "resign", player: this.myPlayer });
         return;
       }
+      if (this.isFfa()) {
+        // 3–4 players: the side that gives up just leaves the game — its
+        // units fall, its castles stay as they are, play goes on.
+        const quitter = this.currentPlayer;
+        this.ownUnits(quitter).forEach((u) => { u.hp = 0; });
+        this.board.removeDead((u) => this.dropUnitGear(u)); // drops gear + starts the death anim
+        this.lastEvent = tr("Игрок {p} сдался.", { p: quitter });
+        this.selectedUnit = null;
+        this.clearHighlights();
+        // Everyone has given up: nobody is left to take the castles — a draw
+        // (winner 0) rather than a game with no one to move.
+        let anyoneLeft = false;
+        for (let p = 1; p <= this.ffaPlayers; p += 1) if (this.ownUnits(p).length > 0) anyoneLeft = true;
+        if (!anyoneLeft) {
+          this.winner = 0;
+          this.message = tr("Ничья — сдались все.");
+          this.renderSidebar();
+          return;
+        }
+        this.endTurn();
+        return;
+      }
       this.winner = otherPlayer(this.currentPlayer);
       this.sessionWins[this.winner]++;
       this.message = tr("Игрок {p} сдался.", { p: this.currentPlayer });
@@ -5883,6 +6123,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
     isUnitInEnemyCastle(unit) {
       if (!unit) return false;
+      if (this.isFfa()) {
+        const i = this.ffaCastleAt(unit.row, unit.col);
+        return i >= 0 && this.ffaOwners[i] !== unit.player;
+      }
       const enemyPlayer = unit.player === 1 ? 2 : 1;
       const enemyCastleCol = enemyPlayer === 1 ? getCastleP1Col() : getCastleP2Col();
       const enemyCastleRow = enemyPlayer === 1
@@ -5892,10 +6136,181 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
              unit.col >= enemyCastleCol && unit.col < enemyCastleCol + 4;
     }
 
+    // ── 3–4 player free-for-all ──────────────────────────────────────────
+    isFfa() {
+      return this.mode === 'ffa';
+    }
+
+    /** Nickname chosen in the lobby, else "Игрок N". `html`: escape for innerHTML. */
+    playerLabel(p, html) {
+      const name = this.playerNames && this.playerNames[p - 1];
+      if (!name) return tr('Игрок {p}', { p });
+      return html ? this.escape(name) : name;
+    }
+
+    /** FFA with bots: seats with a level in ffaBotLevels are played by FfaBot. */
+    isFfaBotTurn() {
+      return this.isFfa() && !!this.ffaBotLevels[this.currentPlayer];
+    }
+
+    ffaBotLevel() {
+      return (this.ffaBotLevels && this.ffaBotLevels[this.currentPlayer]) || null;
+    }
+
+    ffaCastleCenter(i) {
+      const c = FFA_CORNERS[i];
+      return { row: c.row + 1, col: c.col + 1 };
+    }
+
+    /** Index of the FFA castle (row, col) lies in, or -1. */
+    ffaCastleAt(row, col) {
+      return FFA_CORNERS.findIndex(
+        (c) => row >= c.row && row < c.row + FFA_CASTLE && col >= c.col && col < c.col + FFA_CASTLE,
+      );
+    }
+
+    playerColor(p) {
+      if (this.isFfa()) return lobbyHex((this.ffaFactions || FFA_FACTIONS)[p - 1]) || FFA_COLORS[p - 1] || '#999';
+      return p === 1 ? COLORS.p1 : COLORS.p2;
+    }
+
+    /** Open field with a few mountains, repeated under 4-fold rotation so no corner is favoured. */
+    setupFfaMap() {
+      setCastleP1Col(0);
+      setCastleP2Col(0);
+      setRuins({ ...getRuins(), width: 0, height: 0 });
+      setRuins2(null);
+      setTowers([]);
+      setConstructions([]);
+      setBridgeDurability({});
+      const terrain = [];
+      const seen = new Set();
+      const count = 3 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < count; i += 1) {
+        let r = 3 + Math.floor(Math.random() * 6);
+        let c = 4 + Math.floor(Math.random() * 6);
+        for (let k = 0; k < 4; k += 1) {
+          const key = r + ',' + c;
+          if (!seen.has(key) && this.ffaCastleAt(r, c) < 0) {
+            seen.add(key);
+            terrain.push({ row: r, col: c, type: 'mountain' });
+          }
+          [r, c] = [c, ROWS - 1 - r]; // rotate 90° about the centre
+        }
+      }
+      setTerrain(terrain);
+    }
+
+    /** Place each player's 6 units inside their corner castle. */
+    setupFfaUnits(n) {
+      const units = [];
+      let id = 1;
+      for (let p = 1; p <= n; p += 1) {
+        const c = FFA_CORNERS[p - 1];
+        const top = c.row === 0;
+        const left = c.col === 0;
+        const innerRow = top ? FFA_CASTLE - 1 : ROWS - FFA_CASTLE;
+        const innerCol = left ? FFA_CASTLE - 1 : COLS - FFA_CASTLE;
+        for (const [type, dr, dc] of FFA_ROSTER) {
+          units.push(new Unit(id++, p, type, innerRow + (top ? -dr : dr), innerCol + (left ? -dc : dc)));
+        }
+      }
+      this.board.units = units;
+      this.board.nextId = id;
+      this.ffaPlayers = n;
+      this.ffaOwners = FFA_CORNERS.map((_, i) => (i < n ? i + 1 : null));
+      const zero = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      this.shieldTurns = { ...zero };
+      this.damageBuff = { ...zero };
+      this.sessionWins = { ...zero, ...(this.sessionWins || {}) };
+    }
+
+    /** Next player (clockwise) that still has living units. */
+    nextFfaPlayer(from) {
+      for (let k = 1; k <= this.ffaPlayers; k += 1) {
+        const p = ((from - 1 + k) % this.ffaPlayers) + 1;
+        if (this.ownUnits(p).length > 0) return p;
+      }
+      return from;
+    }
+
+    /** Count a kill for the leaderboard (friendly fire doesn't count). */
+    creditKill(attacker, target) {
+      if (attacker && target && attacker.player !== target.player) attacker.kills = (attacker.kills || 0) + 1;
+    }
+
+    /** `loser`'s home castle fell to `taker`: everyone but its top 30% by
+     *  kills joins the taker. Returns how many units switched sides. */
+    ffaConquer(loser, taker) {
+      const army = this.ownUnits(loser)
+        .filter((u) => !u.dying)
+        .sort((a, b) => (b.kills || 0) - (a.kills || 0) || a.id - b.id);
+      const loyal = Math.ceil(army.length * FFA_LOYAL_SHARE);
+      const turned = army.slice(loyal);
+      for (const u of turned) {
+        u.player = taker;
+        // A turncoat neither keeps its old mage's shield nor shields old allies.
+        u.wardedBy = null;
+        if (u.type === 'mage') {
+          this.board.units.forEach((o) => { if (o.wardedBy === u.id) o.wardedBy = null; });
+          u.warding = [];
+        }
+        // It joins the next turn, not the one in progress.
+        u.done = true;
+        u.movesLeft = 0;
+      }
+      return turned.length;
+    }
+
+    /** Castle control + the all-castles win, after every action. */
+    checkFfaWinner() {
+      for (let i = 0; i < FFA_CORNERS.length; i += 1) {
+        const present = new Set(
+          this.board.units.filter((u) => u.alive() && !u.dying && this.ffaCastleAt(u.row, u.col) === i).map((u) => u.player),
+        );
+        if (present.size !== 1) continue;
+        const taker = [...present][0];
+        const prev = this.ffaOwners[i];
+        if (prev === taker) continue;
+        this.ffaOwners[i] = taker;
+        let text = tr("Игрок {p} захватил замок!", { p: taker });
+        // Taking a nation's OWN castle from it brings most of that nation over.
+        if (prev !== null && prev === i + 1) {
+          const n = this.ffaConquer(prev, taker);
+          if (n > 0) text += " " + tr("{n} воинов игрока {q} переходят к нему.", { n, q: prev });
+        }
+        this.lastEvent = text;
+      }
+      const owner = this.ffaOwners[0];
+      if (owner !== null && this.ffaOwners.every((o) => o === owner)) {
+        this.winner = owner;
+        this.sessionWins[owner] = (this.sessionWins[owner] || 0) + 1;
+        this.message = tr("Победа игрока {p}! Все замки под его контролем!", { p: owner });
+      }
+    }
+
+    /** Sidebar block: who holds which castle + every nation's kill leaderboard. */
+    ffaSidebarHTML() {
+      const corner = [tr("↖"), tr("↗"), tr("↘"), tr("↙")];
+      let html = '<div class="line" style="margin:6px 0 2px"><strong>🏰 ' + tr("Замки") + '</strong></div><div class="line">';
+      this.ffaOwners.forEach((o, i) => {
+        html += '<span style="margin-right:8px">' + corner[i] + ' ' +
+          (o === null ? tr("ничей") : '<span style="color:' + this.playerColor(o) + '">■ ' + o + '</span>') + '</span>';
+      });
+      html += '</div>';
+      // Kills are still counted (creditKill) and decide who stays loyal
+      // (ffaConquer), but the leaderboard itself is not shown.
+      return html;
+    }
+
     checkWinner() {
       // Already decided — a second call in the same action (e.g. a ward
       // overdraw inside an attack) must not count the win twice.
       if (this.winner !== null) return;
+      if (this.isFfa()) {
+        this.checkFfaWinner();
+        return;
+      }
       // Победа: занять пустой замок противника (нет его юнитов в его зоне)
       const p1InEnemy = this.board.units.some((u) => u.player === 1 && u.alive() && this.isUnitInEnemyCastle(u));
       const p2InOwnCastle = this.board.units.some((u) => u.player === 2 && u.alive() && this.isUnitInOwnCastle(u));
@@ -6267,11 +6682,14 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         }
         html += '</div>';
       }
-      html += '<div class="player-label ' + playerClass + '">' + tr('Игрок {p}', { p: this.currentPlayer }) + '</div>';
+      html += '<div class="player-label ' + playerClass + '"' +
+        (this.isFfa() ? ' style="color:' + this.playerColor(this.currentPlayer) + '"' : '') + '>' +
+        this.playerLabel(this.currentPlayer, true) + '</div>';
       // Quiet one-line reminder of what's being played (vs AI difficulty /
       // story mission) — the minimal HUD otherwise never says it.
       const modeLabel = this.online ? tr("Онлайн") : this.getGameModeLabel();
       html += '<div class="hint mode-label" style="opacity:0.7;margin:-2px 0 4px">' + this.escape(modeLabel) + '</div>';
+      if (this.isFfa() && this.ffaOwners) html += this.ffaSidebarHTML();
 
       // Anim #15: AI thinking indicator — with a real progress bar when the AI
       // is mid-search (time-sliced MCTS reports ai.thinkProgress 0..1).
@@ -6306,7 +6724,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         ">🏠</button>";
 
       // P0: in-turn undo button — shown on the human's turn once an action is recorded.
-      const humanTurn = !(this.mode === "ai" && this.currentPlayer === 2);
+      const humanTurn = !(this.mode === "ai" && this.currentPlayer === 2) && !this.isFfaBotTurn();
       if (this.undoStack.length > 0 && humanTurn && !waitingWeaponEquip && this.winner === null) {
         html += '<button class="btn" data-action="undo" aria-label="' + tr('Отменить') + '" title="' + tr('Отменить') + '">↶</button>';
       }
@@ -6418,7 +6836,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           this.escape(this.trName(previewUnit.name)) +
           ' <span class="tag" style="color:' +
           (previewUnit.player === 1 ? COLORS.p1 : COLORS.p2) +
-          '">' + tr('Игрок {p}', { p: previewUnit.player }) +
+          '">' + this.playerLabel(previewUnit.player, true) +
           "</span></div>";
         html +=
           '<div class="kv">HP: ' +
@@ -6608,7 +7026,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       const hudAct = document.getElementById('hudActivations');
       const hudUnits = document.getElementById('hudUnits');
       if (hud && hudPlayer && hudAct) {
-        hudPlayer.textContent = tr('Игрок {p}', { p: this.currentPlayer });
+        hudPlayer.textContent = this.playerLabel(this.currentPlayer, false);
         hudPlayer.className = 'hud-chip ' + (this.currentPlayer === 1 ? 'p1' : 'p2');
         hudAct.textContent = '⚡ ' + activationLeft + '  ' + tr('Ход {n}', { n: this.turnNumber });
         if (hudUnits) {
@@ -6651,18 +7069,23 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       const p1Count = this.ownUnits(1).length;
       const p2Count = this.ownUnits(2).length;
-      const winnerColor = this.winner === 1 ? COLORS.p1 : COLORS.p2;
+      const ffa = this.isFfa();
+      const isDraw = this.winner === 0; // 3–4 players: everyone gave up
+      const winnerColor = isDraw ? "#ccc" : ffa ? this.playerColor(this.winner) : this.winner === 1 ? COLORS.p1 : COLORS.p2;
       const modeLabel = this.online ? tr("Онлайн") : this.getGameModeLabel();
 
       // Online: relabel from the local player's perspective + offer a rematch.
       const online = this.online;
       const iWon = online && this.winner === this.myPlayer;
-      const titleText = online ? (iWon ? tr("🏆 Победа!") : tr("Поражение")) : tr("🏆 Победа");
-      const winnerText = online
-        ? iWon
-          ? tr("Вы победили!")
-          : tr("Вы проиграли")
-        : tr("Победил игрок {p}", { p: this.winner });
+      const titleText = isDraw ? tr("🤝 Ничья") : online ? (iWon ? tr("🏆 Победа!") : tr("Поражение")) : tr("🏆 Победа");
+      const winnerText = isDraw
+        ? tr("Сдались все игроки")
+        : online
+          ? iWon
+            ? tr("Вы победили!")
+            : tr("Вы проиграли")
+          : tr("Победил игрок {p}", { p: this.winner });
+      const statPlayers = ffa ? Array.from({ length: this.ffaPlayers }, (_, i) => i + 1) : [1, 2];
       const actions = online
         ? '<button class="btn restart" data-action="online-rematch">' + tr('Реванш') + '</button>' +
           '<button class="btn secondary" data-action="back-menu">' + tr('В меню') + '</button>'
@@ -6683,10 +7106,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         modeLabel +
         "</div>" +
         '<div class="victory-stats">' +
-        '<span>' + tr('Игрок {p}', { p: 1 }) + ': ' + p1Count + '</span>' +
-        '<span>' + tr('Игрок {p}', { p: 2 }) + ': ' + p2Count + '</span>' +
+        statPlayers.map((p) => '<span>' + this.playerLabel(p, true) + ': ' + (p === 1 ? p1Count : p === 2 ? p2Count : this.ownUnits(p).length) + '</span>').join('') +
         '</div>' +
-        (this.sessionWins[1] + this.sessionWins[2] > 1
+        (!ffa && this.sessionWins[1] + this.sessionWins[2] > 1
           ? '<div class="victory-session">' + tr('Счёт сессии:') + ' ' + this.sessionWins[1] + ' — ' + this.sessionWins[2] + '</div>'
           : '') +
         '<div class="victory-actions">' +
@@ -6695,7 +7117,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         "</div>";
 
       this.victoryOverlay.classList.add("show");
-      this.launchConfetti(winnerColor);
+      if (!isDraw) this.launchConfetti(winnerColor);
     }
 
     launchConfetti(winnerColor) {
@@ -6857,7 +7279,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     }
 
     spriteKeyForUnit(unit) {
-      const faction = unit.player === 1 ? (this.p1Faction || 'blue') : (this.p2Faction || 'red');
+      const faction = this.isFfa()
+        ? (this.ffaFactions || FFA_FACTIONS)[unit.player - 1] || 'black'
+        : unit.player === 1 ? (this.p1Faction || 'blue') : (this.p2Faction || 'red');
       return "u_" + faction + "_" + unit.type;
     }
 
@@ -6974,10 +7398,14 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         }
       }
 
-      const p1Top = this.player1Bottom ? 16 : 0;
-      const p2Top = this.player1Bottom ? 0 : 16;
-      this.drawCastle(1, p1Top, getCastleP1Col());
-      this.drawCastle(2, p2Top, getCastleP2Col());
+      if (this.isFfa()) {
+        this.drawFfaCastles(ctx);
+      } else {
+        const p1Top = this.player1Bottom ? 16 : 0;
+        const p2Top = this.player1Bottom ? 0 : 16;
+        this.drawCastle(1, p1Top, getCastleP1Col());
+        this.drawCastle(2, p2Top, getCastleP2Col());
+      }
       this.drawTowers();
       this.drawConstructions();
       // Ruins removed from the map: artifacts are buried across the whole board
@@ -7526,6 +7954,25 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       }
     }
 
+    /** The four 3×3 corner castles: the same castle picture as the 2-player
+     *  game, in the current holder's colour (black = nobody's). Drawn under
+     *  the units like the 2-player castles. */
+    drawFfaCastles(ctx) {
+      FFA_CORNERS.forEach((c, i) => {
+        const owner = this.ffaOwners ? this.ffaOwners[i] : null;
+        const img = this.assets.get("castle_" + (owner ? (this.ffaFactions || FFA_FACTIONS)[owner - 1] : "black"));
+        const x = c.col * CELL_SIZE;
+        const y = c.row * CELL_SIZE;
+        const size = CELL_SIZE * FFA_CASTLE;
+        if (img) {
+          ctx.drawImage(img, x, y, size, size);
+        } else {
+          ctx.fillStyle = owner ? this.playerColor(owner) : "#777";
+          ctx.fillRect(x, y, size, size);
+        }
+      });
+    }
+
     drawCastle(player, topRow, leftCol) {
       const ctx = this.ctx;
       const x = leftCol * CELL_SIZE;
@@ -7983,6 +8430,36 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       }
       
       ctx.restore();
+
+      // Facing marker (facing.ts): a small team-coloured wedge on the cell
+      // edge the unit looks toward — the opposite edge is its weak back.
+      if (!unit.dying && unit.facing) {
+        const c = CELL_SIZE / 2;
+        const tip = CELL_SIZE * 0.5;
+        const base = CELL_SIZE * 0.36;
+        const half = CELL_SIZE * 0.13;
+        const pts = {
+          up: [[c, c - tip], [c - half, c - base], [c + half, c - base]],
+          down: [[c, c + tip], [c - half, c + base], [c + half, c + base]],
+          left: [[c - tip, c], [c - base, c - half], [c - base, c + half]],
+          right: [[c + tip, c], [c + base, c - half], [c + base, c + half]],
+        }[unit.facing];
+        if (pts) {
+          ctx.save();
+          ctx.translate(baseX, baseY);
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          ctx.lineTo(pts[1][0], pts[1][1]);
+          ctx.lineTo(pts[2][0], pts[2][1]);
+          ctx.closePath();
+          ctx.fillStyle = this.playerColor(unit.player);
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 1;
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
 
       // Anim #5: hit flash — white overlay for N frames on damage
       if (unit.hitFlash > 0 && !unit.dying) {
@@ -8445,31 +8922,33 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     // same pure attackDamage() that performAttack uses, so forecast == actual.
     drawAttackForecast(ctx) {
       if (!this.selectedUnit || !this.attackMap || this.attackMap.size === 0) return;
+      const me = this.selectedUnit;
       const combatCtx = {
         damageBuff: this.damageBuff,
         shieldTurns: this.shieldTurns,
-        attackerOnTower: this.board.isTower(this.selectedUnit.row, this.selectedUnit.col),
+        attackerOnTower: this.board.isTower(me.row, me.col),
       };
-      const seen = new Set();
-      const drawForecast = (row, col, target, allowAlly) => {
-        const tkey = row + "," + col;
-        if (seen.has(tkey)) return;
-        seen.add(tkey);
-        if (!target) return;
-        const friendly = target.player === this.selectedUnit.player;
-        if (friendly && !allowAlly) return;
-        const dmg = attackDamage(this.selectedUnit, target, combatCtx);
+      // Same pure attackDamage() performAttack uses, from the cell the blow
+      // actually lands from — for a cavalry jump that is its LANDING cell, so
+      // a leap over the victim shows the ×2 back hit it really deals.
+      const damageFrom = (a, target) => {
+        const jump = a.mode === "jump" || a.mode === "l-attack";
+        const from = jump ? { ...me, row: a.landingRow, col: a.landingCol } : me;
+        return attackDamage(from, target, combatCtx);
+      };
+      const label = (row, col, dmg, target, friendly, small) => {
         const hpLoss = Math.max(0, dmg - target.armor);
         const kill = target.hp - hpLoss <= 0;
         const cx = col * CELL_SIZE + CELL_SIZE / 2;
         const cy = row * CELL_SIZE + CELL_SIZE / 2;
-        const label = kill ? "☠ " + dmg : "-" + dmg;
+        const text = kill ? "☠ " + dmg : "-" + dmg;
         ctx.save();
-        ctx.font = "bold 16px sans-serif";
+        ctx.globalAlpha = small ? 0.8 : 1;
+        ctx.font = (small ? "bold 12px" : "bold 16px") + " sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        const w = ctx.measureText(label).width + 14;
-        const h = 20;
+        const w = ctx.measureText(text).width + (small ? 10 : 14);
+        const h = small ? 16 : 20;
         const bx = cx - w / 2;
         const by = cy - h / 2;
         ctx.beginPath();
@@ -8481,20 +8960,39 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         ctx.strokeStyle = kill ? "#ff8a8a" : friendly ? "#ffb040" : "#e35757";
         ctx.stroke();
         ctx.fillStyle = "#fff";
-        ctx.fillText(label, cx, cy);
+        ctx.fillText(text, cx, cy);
         ctx.restore();
       };
 
+      // Per target cell: the biggest hit any option deals there.
+      const best = new Map();
+      const note = (row, col, target, dmg, allowAlly) => {
+        if (!target) return;
+        const friendly = target.player === me.player;
+        if (friendly && !allowAlly) return;
+        const k = row + "," + col;
+        const cur = best.get(k);
+        if (!cur || dmg > cur.dmg) best.set(k, { row, col, target, dmg, friendly });
+      };
       this.attackMap.forEach((a) => {
         if (a.mode === "pierce") {
           // Forecast every cell on the line, including a friendly one — the
           // whole point is to see this hit before committing to it.
           const line = a.targets && a.targets.length ? a.targets : [{ row: a.targetRow, col: a.targetCol }];
-          line.forEach((cell) => drawForecast(cell.row, cell.col, this.board.unitAt(cell.row, cell.col), true));
+          line.forEach((cell) => {
+            const t = this.board.unitAt(cell.row, cell.col);
+            if (t) note(cell.row, cell.col, t, damageFrom(a, t), true);
+          });
           return;
         }
-        drawForecast(a.targetRow, a.targetCol, this.board.unitAt(a.targetRow, a.targetCol), false);
+        const t = this.board.unitAt(a.targetRow, a.targetCol);
+        if (!t || t.player === me.player) return;
+        const dmg = damageFrom(a, t);
+        note(a.targetRow, a.targetCol, t, dmg, false);
+        // A cavalry chooses its blow by where it lands: label each landing cell.
+        if (a.mode === "jump" || a.mode === "l-attack") label(a.landingRow, a.landingCol, dmg, t, false, true);
       });
+      best.forEach((b) => label(b.row, b.col, b.dmg, b.target, b.friendly, false));
     }
 
     // P0 threat overlay: when toggled on, mark every cell the enemy can attack
@@ -8744,6 +9242,20 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
      * becomes permanent impassable `rock` terrain, so a catapult can wall off a
      * corridor or deny a bridge instead of only killing units. Costs one move.
      */
+    /** Pay for a 1-move action aimed at (row, col): +1 and a turn to face it
+     *  when the cell is in the unit's back half (facing.ts — same rule as the
+     *  server reducer). */
+    spendToward(unit, row, col, base = 1) {
+      const turn = turnCost(unit, row, col);
+      unit.movesLeft -= base + turn;
+      if (turn > 0) unit.facing = facingToward(unit.row, unit.col, row, col, unit.facing);
+    }
+
+    /** Whether `unit` has the moves for a 1-move action aimed at (row, col). */
+    canAffordToward(unit, row, col, base = 1) {
+      return unit.movesLeft >= base + turnCost(unit, row, col);
+    }
+
     rockTargetsFor(unit) {
       if (!unit || unit.type !== "catapult" || unit.movesLeft < 1) return [];
       const maxR = catapultMaxRangeFor(this.board.isTower(unit.row, unit.col));
@@ -8793,7 +9305,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
     toggleRockMode() {
       if (!this.selectedUnit || this.selectedUnit.type !== "catapult") return false;
       this.rockMode = !this.rockMode;
-      this.rockTargets = this.rockMode ? this.rockTargetsFor(this.selectedUnit) : [];
+      this.rockTargets = this.rockMode
+        ? this.rockTargetsFor(this.selectedUnit).filter((t) => this.canAffordToward(this.selectedUnit, t.row, t.col))
+        : [];
       this.message = this.rockMode
         ? tr("Выберите пустую клетку для броска камня.")
         : "";
@@ -8823,7 +9337,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       if (existing) {
         // Shatter: remove the boulder, leaving passable ground.
         setTerrain(getTerrain().filter((t) => !(t.row === row && t.col === col && t.type === "rock")));
-        unit.movesLeft -= 1;
+        this.spendToward(unit, row, col);
         this.rockMode = false;
         this.rockTargets = [];
         const bx = col * CELL_SIZE + CELL_SIZE / 2;
@@ -8845,7 +9359,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       }
 
       setTerrain([...getTerrain(), { row, col, type: "rock" }]);
-      unit.movesLeft -= 1;
+      this.spendToward(unit, row, col);
       this.rockMode = false;
       this.rockTargets = [];
 
@@ -9057,7 +9571,8 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
           if (energy >= dist * MAGE_BURN_BRIDGE_ENERGY_PER_CELL) out.push({ row: t.row, col: t.col });
         });
       }
-      return out;
+      // Aiming behind costs +1 move to turn round (healing an ally doesn't).
+      return kind === 'heal' ? out : out.filter((t) => this.canAffordToward(unit, t.row, t.col));
     }
 
     /** Resolve a click on (row,col) while `this.mageMode` targeting is active. */
@@ -9132,6 +9647,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       const dmg = Math.max(1, Math.floor(chosenDamage) || 1);
       const cost = dmg * MAGE_ATTACK_ENERGY_PER_HP + dist * MAGE_ATTACK_ENERGY_PER_CELL;
       if (unit.energy < cost) return false;
+      if (!this.canAffordToward(unit, hit.row, hit.col)) return false;
 
       if (this.online) {
         this.recordAction({ kind: "mage-attack", unitId: unit.id, targetRow: hit.row, targetCol: hit.col, damage: dmg });
@@ -9139,11 +9655,12 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
 
       let damage = dmg;
       if (this.damageBuff[unit.player] > 0) damage += 2;
+      damage = applyFacingDamage(damage, target, unit.row, unit.col); // back ×2, side ×1.25
       const warded = this.absorbWithWard(target, damage);
       if (!warded) applyDamageToTarget(target, damage);
 
       unit.energy -= cost;
-      unit.movesLeft -= 1;
+      this.spendToward(unit, hit.row, hit.col);
       this.mageMode = null;
       this.mageTargets = [];
 
@@ -9172,6 +9689,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       if (target.hp <= 0) {
         this.lastEvent += " " + tr("{name} повержен.", { name: this.trName(target.name) });
         this.dropUnitGear(target);
+        this.creditKill(unit, target);
         target.startDeath();
         this.createExplosion(toX, toY, "#666", 8);
         this.cameraShake = 12;
@@ -9233,7 +9751,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       // absorbWithWard may have killed `unit` itself (draining a target it
       // wards, overdrawn) — only spend its move if it's still alive to spend it.
       if (unit.alive()) {
-        unit.movesLeft -= 1;
+        this.spendToward(unit, target.row, target.col);
       }
       this.mageMode = null;
       this.mageTargets = [];
@@ -9328,7 +9846,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       this.sinkLootAt(hit.row, hit.col);
 
       unit.energy -= cost;
-      unit.movesLeft -= 1;
+      this.spendToward(unit, hit.row, hit.col);
       this.mageMode = null;
       this.mageTargets = [];
 
@@ -9585,6 +10103,53 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       return targets;
     }
 
+    /**
+     * AI entry point for the engine actions AIAction can't express (mage
+     * abilities, building) — drives the same functions a click does, on the
+     * already-selected unit. Rows are in live orientation. Returns success.
+     */
+    performEngineAction(a) {
+      const unit = this.selectedUnit;
+      if (!unit || !a || a.unitId !== unit.id) return false;
+      const cellOf = (id) => {
+        const u = this.board.units.find((o) => o.id === id && o.alive());
+        return u ? { row: u.row, col: u.col, unitId: u.id } : null;
+      };
+      switch (a.kind) {
+        case 'mage-attack':
+          this.mageMode = 'attack';
+          return this.performMageAttack({ row: a.targetRow, col: a.targetCol }, a.damage);
+        case 'mage-drain': {
+          const hit = cellOf(a.targetUnitId);
+          this.mageMode = 'drain';
+          return !!hit && this.performMageDrain(hit);
+        }
+        case 'mage-heal': {
+          const hit = cellOf(a.targetUnitId);
+          this.mageMode = 'heal';
+          return !!hit && this.performMageHeal(hit);
+        }
+        case 'mage-burn-bridge':
+          this.mageMode = 'burn-bridge';
+          return this.performMageBurnBridge({ row: a.row, col: a.col });
+        case 'mage-ward':
+          this.mageMode = 'ward';
+          this.mageWardPicks = new Set(a.toggleUnitIds || []);
+          return this.confirmMageWard();
+        case 'build-tower':
+        case 'build-bridge': {
+          const kind = a.kind === 'build-tower' ? 'tower' : 'bridge';
+          this.buildMode = kind;
+          this.buildTargets = this.buildTargetsFor(unit, kind);
+          const ok = this.buildStructure(a.row, a.col);
+          if (!ok) { this.buildMode = null; this.buildTargets = []; }
+          return ok;
+        }
+        default:
+          return false;
+      }
+    }
+
     /** Apply build-tower or build-bridge on (row, col). */
     buildStructure(row, col) {
       const unit = this.selectedUnit;
@@ -9654,7 +10219,10 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
       if (!this.showThreat || !this.board) return;
       const foe = this.currentPlayer === 1 ? 2 : 1;
       const cells = new Set();
-      this.ownUnits(foe).forEach((u) => {
+      const foes = this.isFfa()
+        ? this.board.units.filter((u) => u.alive() && u.player !== this.currentPlayer)
+        : this.ownUnits(foe);
+      foes.forEach((u) => {
         generateAttackActions(this.board, u).forEach((a) => {
           if (a.mode === "pierce" && a.targets) {
             a.targets.forEach((cell) => cells.add(cell.row + "," + cell.col));
@@ -9705,6 +10273,7 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
         this.updateAnimations();
         this.draw();
         this.ai.update();
+        this.ffaBot.update();
       } catch (err) {
         console.error('Game loop step failed; continuing next frame.', err);
       } finally {
@@ -9776,6 +10345,9 @@ import { drawBrokenColumn as shapesBrokenColumn } from './render/shapes.js';
   assets.add("terrain_rock4",  root + "Terrain/Decorations/Rocks/Rock4.png");
   assets.add("castle_blue", root + "Buildings/Blue Buildings/Castle.png");
   assets.add("castle_red", root + "Buildings/Red Buildings/Castle.png");
+  assets.add("castle_yellow", root + "Buildings/Yellow Buildings/Castle.png");
+  assets.add("castle_purple", root + "Buildings/Purple Buildings/Castle.png");
+  assets.add("castle_black", root + "Buildings/Black Buildings/Castle.png");
   assets.add("tower_blue", root + "Buildings/Blue Buildings/Tower.png");
   assets.add("monastery_ruins", root + "Buildings/Blue Buildings/Monastery.png");
   assets.add("ruins_custom", "assets/custom/ruins_custom.png");

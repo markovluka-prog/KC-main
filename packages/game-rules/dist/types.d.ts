@@ -1,4 +1,6 @@
 export type Player = 1 | 2;
+/** Which way a unit looks — see facing.ts. `down` = toward higher rows. */
+export type Facing = 'up' | 'down' | 'left' | 'right';
 export type UnitTypeKey = 'knight' | 'cavalry' | 'archer' | 'catapult' | 'crossbow' | 'samurai' | 'mage';
 export interface UnitStats {
     name: string;
@@ -163,6 +165,8 @@ export interface UnitState {
     maxMoves: number;
     movesLeft: number;
     name: string;
+    /** See facing.ts; absent = the player's default (P1 down, P2 up). */
+    facing?: Facing;
 }
 /**
  * Minimal contract for board queries used by pure game-rules functions.

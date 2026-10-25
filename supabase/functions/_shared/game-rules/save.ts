@@ -1,5 +1,7 @@
 // AUTO-VENDORED from packages/game-rules/src/save.ts — DO NOT EDIT BY HAND.
 // Edit the source and re-run scripts/vendor-game-rules.sh.
+import { defaultFacingForRow, isFacing } from './facing.ts';
+import type { Facing } from './types.ts';
 import {
   ARMORS,
   BUILD_WORK_TOTAL,
@@ -136,6 +138,8 @@ export interface SerializedUnit {
    * MAGE dies (not the warded unit, and not a partial absorb).
    */
   wardedBy?: number | null;
+  /** Which way the unit looks (facing.ts). Absent in pre-facing saves. */
+  facing?: Facing;
 }
 
 export interface SerializedStoryTask {
@@ -307,6 +311,8 @@ export function validateSerializedUnit(raw: unknown): SerializedUnit | null {
   // wardedBy: any unit type can be on the receiving end of a mage's shield.
   const wardedByRaw = toFiniteInt(r.wardedBy, 0);
   unit.wardedBy = wardedByRaw > 0 ? wardedByRaw : null;
+  // Pre-facing saves: look toward the other half of the board from where it stands.
+  unit.facing = isFacing(r.facing) ? r.facing : defaultFacingForRow(row);
 
   return unit;
 }

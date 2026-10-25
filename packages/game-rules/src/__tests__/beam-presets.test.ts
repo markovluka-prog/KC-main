@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { applyAction, createInitialState, endTurn } from '../apply.js';
-import { evaluate } from '../evaluate.js';
-import { planTurn, planTurnWithReply } from '../beam.js';
-import { BEAM_DIFFICULTY, toBeamOptions, toReplyOptions, type BeamDifficulty } from '../beam-presets.js';
+import { applyAction, createInitialState } from '../apply.js';
+import { planTurn } from '../beam.js';
+import { mergeRolloutPicks, selectFinalists } from '../rollout.js';
+import { BEAM_DIFFICULTY, isTwoPass, planTurnFinalSliceFor, planTurnFirstPassFor, planTurnFor, toBeamOptions, type BeamDifficulty } from '../beam-presets.js';
+import { createMatchSetup } from '../setup.js';
 import { mulberry32 } from '../rng.js';
 import type { SerializedUnit } from '../save.js';
 import type { GameState } from '../state.js';
@@ -46,126 +47,84 @@ function replay(state: GameState, actions: ReturnType<typeof planTurn>): GameSta
   return s;
 }
 
+describe('two-pass halving (impossible)', () => {
+  it('threads reproduce the sequential plan exactly', () => {
+    const cfg = BEAM_DIFFICULTY.impossible;
+    expect(isTwoPass(cfg)).toBe(true);
+    const state = createInitialState({ mode: 'pvp', seed: 3, ...createMatchSetup(3) });
+    const slices = 3;
+    const firsts = [0, 1, 2].flatMap((k) => planTurnFirstPassFor(state, 1, cfg, 5, undefined, k, slices));
+    const top = selectFinalists(firsts, cfg.rollout!.finalists!);
+    const picks = [0, 1, 2].map((k) => planTurnFinalSliceFor(state, 1, cfg, 5, undefined, top, k, slices));
+    expect(mergeRolloutPicks(picks).actions).toEqual(planTurnFor(state, 1, cfg, 5));
+  }, 120_000);
+});
+
 describe('BEAM_DIFFICULTY presets', () => {
-  const difficulties: BeamDifficulty[] = ['easy', 'medium', 'hard', 'expert'];
+  const difficulties: BeamDifficulty[] = ['easy', 'medium', 'hard', 'expert', 'impossible'];
 
-  it('defines all four difficulties with strictly increasing beam width', () => {
-    const widths = difficulties.map((d) => BEAM_DIFFICULTY[d].beamWidth);
-    for (let i = 1; i < widths.length; i++) {
-      expect(widths[i]).toBeGreaterThan(widths[i - 1]!);
-    }
+  // The ladder itself (each level beats every weaker one, impossible never
+  // loses) is measured by scripts/ladder.mjs — far too slow for a unit test.
+  // These pin the SHAPE that measurement validated, so a casual edit can't
+  // silently reorder the levels.
+  it('easy is the only noisy level; medium plays out fewer, shorter candidates than hard', () => {
+    expect(BEAM_DIFFICULTY.easy.noise).toBeGreaterThan(0);
+    for (const d of ['medium', 'hard', 'expert', 'impossible'] as const) expect(BEAM_DIFFICULTY[d].noise).toBe(0);
+    const m = BEAM_DIFFICULTY.medium.rollout!;
+    const h = BEAM_DIFFICULTY.hard.rollout!;
+    expect(m.candidates).toBeLessThan(h.candidates);
+    expect(m.turns).toBeLessThan(h.turns);
   });
 
-  it('only hard/expert use opponent-reply lookahead; easy/medium do not', () => {
-    expect(BEAM_DIFFICULTY.easy.reply).toBe(false);
-    expect(BEAM_DIFFICULTY.medium.reply).toBe(false);
-    expect(BEAM_DIFFICULTY.hard.reply).toBe(true);
-    expect(BEAM_DIFFICULTY.expert.reply).toBe(true);
+  it('hard and impossible play their candidates out, impossible deeper and wider', () => {
+    const h = BEAM_DIFFICULTY.hard.rollout!;
+    const i = BEAM_DIFFICULTY.impossible.rollout!;
+    expect(h).toBeDefined();
+    expect(i).toBeDefined();
+    expect(i.candidates).toBeGreaterThan(h.candidates);
+    expect(i.turns).toBeGreaterThan(h.turns);
   });
 
-  it('noise strictly decreases as difficulty increases, reaching exactly 0 at hard/expert', () => {
-    expect(BEAM_DIFFICULTY.easy.noise).toBeGreaterThan(BEAM_DIFFICULTY.medium.noise);
-    expect(BEAM_DIFFICULTY.medium.noise).toBeGreaterThan(BEAM_DIFFICULTY.hard.noise);
-    expect(BEAM_DIFFICULTY.hard.noise).toBe(0);
-    expect(BEAM_DIFFICULTY.expert.noise).toBe(0);
-  });
-
-  it.each(difficulties)('%s: toBeamOptions/toReplyOptions produce a legal, replayable plan', (d) => {
-    const config = BEAM_DIFFICULTY[d];
-    const attacker = mkUnit({ id: 1, player: 2, type: 'knight', row: 10, col: 10, damage: 5 });
+  it.each(difficulties)('%s: planTurnFor produces a legal, replayable plan', (d) => {
+    const attacker = mkUnit({ id: 1, player: 2, type: 'knight', row: 10, col: 10, damage: 5, facing: 'right' });
     const victim = mkUnit({ id: 2, player: 1, type: 'knight', row: 10, col: 11, hp: 3, maxHp: 3 });
-    const state = createInitialState({
-      mode: 'pvp',
-      seed: 7,
-      units: [attacker, victim],
-      player1Starts: false,
-    });
-
-    const actions = config.reply
-      ? planTurnWithReply(state, 2, toReplyOptions(config))
-      : planTurn(state, 2, toBeamOptions(config));
-
+    const state = createInitialState({ mode: 'pvp', seed: 7, units: [attacker, victim], player1Starts: false });
+    const actions = planTurnFor(state, 2, BEAM_DIFFICULTY[d], 7);
     expect(actions.length).toBeGreaterThan(0);
     replay(state, actions); // throws (via expect.ok assertions inside) if any action is illegal
   });
 
-  it.each((['medium', 'hard', 'expert'] as BeamDifficulty[]))(
+  it.each(['medium', 'hard', 'expert', 'impossible'] as BeamDifficulty[])(
     '%s: finds the obvious free kill (unlike easy, these should not miss it)',
     (d) => {
-      const config = BEAM_DIFFICULTY[d];
-      const attacker = mkUnit({ id: 1, player: 2, type: 'knight', row: 10, col: 10, damage: 5 });
+      const attacker = mkUnit({ id: 1, player: 2, type: 'knight', row: 10, col: 10, damage: 5, facing: 'right' });
       const victim = mkUnit({ id: 2, player: 1, type: 'knight', row: 10, col: 11, hp: 3, maxHp: 3 });
-      const state = createInitialState({
-        mode: 'pvp',
-        seed: 7,
-        units: [attacker, victim],
-        player1Starts: false,
-      });
-
-      const actions = config.reply
-        ? planTurnWithReply(state, 2, toReplyOptions(config))
-        : planTurn(state, 2, toBeamOptions(config));
-
-      const after = replay(state, actions);
+      // A defender sits in P1's castle: otherwise the deep levels rightly see
+      // that walking into the EMPTY castle wins faster than the kill does.
+      const base = createInitialState({ mode: 'pvp', seed: 7, units: [attacker, victim], player1Starts: false });
+      const guard = mkUnit({ id: 3, player: 1, type: 'knight', row: 1, col: base.castleP1Col + 1 });
+      const state = createInitialState({ mode: 'pvp', seed: 7, units: [attacker, victim, guard], player1Starts: false });
+      const after = replay(state, planTurnFor(state, 2, BEAM_DIFFICULTY[d], 7));
       const victimAfter = after.units.find((u) => u.id === 2);
       expect(!victimAfter || victimAfter.hp <= 0).toBe(true);
     },
   );
 
-  it('easy (beamWidth=1, noise=0.25) never plays an illegal or crashing plan, even though it may miss the kill', () => {
-    // Documents the "no blunders, but not sharp" philosophy from ai-config.ts:
-    // low beam width + noise means easy can genuinely miss a free kill (it's
-    // not required to find it, unlike medium/hard/expert above), but every
-    // action it DOES choose must still be legal — replay() itself asserts
-    // that on every seed.
+  it('easy never plays an illegal or crashing plan, even though it may miss the kill', () => {
     const attacker = mkUnit({ id: 1, player: 2, type: 'knight', row: 10, col: 10, damage: 5 });
     const victim = mkUnit({ id: 2, player: 1, type: 'knight', row: 10, col: 11, hp: 3, maxHp: 3 });
     for (let seed = 1; seed <= 10; seed++) {
-      const state = createInitialState({
-        mode: 'pvp',
-        seed,
-        units: [attacker, victim],
-        player1Starts: false,
-      });
-      const actions = planTurn(state, 2, toBeamOptions(BEAM_DIFFICULTY.easy));
-      replay(state, actions);
+      const state = createInitialState({ mode: 'pvp', seed, units: [attacker, victim], player1Starts: false });
+      replay(state, planTurn(state, 2, { ...toBeamOptions(BEAM_DIFFICULTY.easy), rngSeed: seed }));
     }
   });
 
-  it("hard's reply-aware search outperforms medium's reply-blind search when a real choice exists", () => {
-    // Same scenario as beam.test.ts's "reply lookahead picks the plan that
-    // scores better..." test, this time driven entirely through the
-    // difficulty presets — the thing a player actually selects — rather than
-    // calling planTurn/planTurnWithReply directly with hand-picked options.
-    // (The original 6-unit both-attackers-hang scenario no longer
-    // discriminates: CASTLE_APPROACH_MULTIPLIER — see evaluate.ts — made even
-    // reply-blind medium avoid it on its own. See beam.test.ts's
-    // "plain planTurn ALSO now avoids..." regression guard for that case.)
-    const units = [
-      mkUnit({ id: 1, player: 2, type: 'archer', row: 10, col: 10, damage: 3 }),
-      mkUnit({ id: 2, player: 1, type: 'cavalry', row: 10, col: 12, hp: 2, maxHp: 5, armor: 0 }),
-      mkUnit({ id: 3, player: 1, type: 'cavalry', row: 9, col: 12, damage: 6, hp: 5 }),
-    ];
-    const state = createInitialState({ mode: 'pvp', seed: 1, units, player1Starts: false });
-
-    const scoreAfterOpponentReply = (finalState: GameState): number => {
-      const afterEndTurn = endTurn(finalState);
-      const oppReply = planTurn(afterEndTurn, 1, toBeamOptions(BEAM_DIFFICULTY.medium));
-      let s = afterEndTurn;
-      const rng = mulberry32(1);
-      for (const a of oppReply) {
-        const r = applyAction(s, a, rng);
-        if (r.ok) s = r.value;
-      }
-      return evaluate(s, 2);
-    };
-
-    const mediumActions = planTurn(state, 2, toBeamOptions(BEAM_DIFFICULTY.medium));
-    const mediumScore = scoreAfterOpponentReply(replay(state, mediumActions));
-
-    const hardActions = planTurnWithReply(state, 2, toReplyOptions(BEAM_DIFFICULTY.hard));
-    const hardScore = scoreAfterOpponentReply(replay(state, hardActions));
-
-    expect(hardScore).toBeGreaterThan(mediumScore);
+  it('every level plans a legal opening on a real match map, deterministically', () => {
+    const state = createInitialState({ mode: 'pvp', seed: 3, ...createMatchSetup(3) });
+    for (const d of ['easy', 'medium', 'hard'] as BeamDifficulty[]) {
+      const a = planTurnFor(state, 1, BEAM_DIFFICULTY[d], 5);
+      expect(planTurnFor(state, 1, BEAM_DIFFICULTY[d], 5)).toEqual(a);
+      replay(state, a);
+    }
   });
 });

@@ -32,10 +32,12 @@
       "samurai": 1000,
       "crossbow": 1000,
       "archer": 900,
-      "catapult": 900
+      "catapult": 900,
+      "mage": 900
     },
     "onTower": 3000,
-    "wipeout": 100000
+    "wipeout": 100000,
+    "perEnergy": 0
   },
   "castle": {
     "$comment": "Castle capture is the real win condition; these dwarf material on purpose.",
@@ -45,7 +47,8 @@
     "lossDefended": 40000,
     "raidThreatRadius": 8,
     "raidThreatPerCell": 7000,
-    "approachPerCell": 60
+    "approachPerCell": 60,
+    "huntPerCell": 60
   },
   "focus": {
     "$comment": "Bonus for enemies already wounded, so damage concentrates instead of spreading.",
@@ -57,7 +60,8 @@
     "outnumberedHomeRadius": 8,
     "lowHpThreshold": 0.35,
     "lowHpDistBonusPerCell": 600,
-    "lowHpDistBonusMax": 3000
+    "lowHpDistBonusMax": 3000,
+    "lowHpScale": 1
   },
   "spacing": {
     "$comment": "Per-unit-type ideal distance to the nearest enemy. Ranged kite, melee close.",
@@ -82,7 +86,11 @@
     "hangingValueFraction": 0.3,
     "hangingMax": 12000,
     "heavilyThreatenedRatio": 0.6,
-    "heavilyThreatenedPenalty": 2500
+    "heavilyThreatenedPenalty": 2500,
+    "perDamagePointTaken": 600,
+    "lethalValueFraction": 1,
+    "killValueFraction": 1,
+    "hangingScale": 1
   },
   "cohesion": {
     "$comment": "Penalty per unit with no friendly unit within `radius`.",
@@ -104,11 +112,11 @@
     ],
     "artifactBase": 900,
     "artifactByName": {
-      "Трава С.": 800,
-      "Посох огня": 1100,
-      "Волшебная палочка": 1200,
-      "Солнечные часы": 1400,
-      "Вода серебряных трав": 1300
+      "Металл": 900,
+      "Амулет": 900,
+      "Рубин": 900,
+      "Дерево": 900,
+      "Стрелы": 900
     },
     "$comment_recipe": "Extra credit once a full recipe is affordable -- a complete set is worth far more than the sum of its parts, since that is the point at which it converts into stats.",
     "completeRecipeBonus": 2500,
@@ -124,6 +132,14 @@
     "$comment": "Active spell effects on the light state (shieldTurns / damageBuff).",
     "shieldPerTurn": 1800,
     "damageBuffPerTurn": 2200
+  },
+  "tempo": {
+    "$comment": "Side-to-move terms (t = +1 when it is my move, -1 otherwise), each multiplying a threat sum. 0 here keeps the beam search unchanged; chance-weights.json fits them.",
+    "base": 0,
+    "dmgDealt": 0,
+    "dmgTaken": 0,
+    "kill": 0,
+    "hanging": 0
   },
   "rollout": {
     "$comment": [

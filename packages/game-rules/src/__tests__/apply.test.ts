@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { generateActionsForUnit } from '../actions.js';
 import { applyAction, createInitialState, endTurn, type ServerAction } from '../apply.js';
 import { mulberry32 } from '../rng.js';
 import type { SerializedUnit } from '../save.js';
@@ -131,7 +132,7 @@ describe('applyAction — attack', () => {
       kind: 'attack',
       unitId: 1,
       mode: 'shot',
-      cost: 2,
+      cost: 1,
       targetRow: 5,
       targetCol: 6,
       landingRow: 5,
@@ -153,7 +154,7 @@ describe('applyAction — attack', () => {
       kind: 'attack',
       unitId: 1,
       mode: 'shot',
-      cost: 2,
+      cost: 1,
       targetRow: 5,
       targetCol: 5,
       landingRow: 0,
@@ -169,8 +170,8 @@ describe('applyAction — attack', () => {
   it('damage <= armor: only armor decreases, hp unchanged', () => {
     // Archer (dmg=3) vs knight (armor=4, hp=3). 3 <= 4 → armor -= 3, hp unchanged.
     const s = startState([
-      mkUnit({ id: 1, player: 1, type: 'archer', row: 5, col: 4 }),
-      mkUnit({ id: 2, player: 2, type: 'knight', row: 5, col: 5 }),
+      mkUnit({ id: 1, player: 1, type: 'archer', row: 5, col: 4, facing: 'right' }),
+      mkUnit({ id: 2, player: 2, type: 'knight', row: 5, col: 5, facing: 'left' }),
     ]);
     const a: ServerAction = {
       kind: 'attack',
@@ -215,8 +216,8 @@ describe('applyAction — attack', () => {
     // See [[kc-mage-ward-mechanic]]: ward is per-unit (wardedBy), full
     // absorption, and drains the WARDING MAGE's energy, not a flat -2/hit.
     const s = startState([
-      mkUnit({ id: 1, player: 1, type: 'archer', row: 5, col: 4 }),
-      mkUnit({ id: 2, player: 2, type: 'archer', row: 5, col: 5 }),
+      mkUnit({ id: 1, player: 1, type: 'archer', row: 5, col: 4, facing: 'right' }),
+      mkUnit({ id: 2, player: 2, type: 'archer', row: 5, col: 5, facing: 'left' }),
       mkUnit({ id: 3, player: 2, type: 'mage', row: 9, col: 9 }),
     ]);
     s.units.find((u) => u.id === 2)!.wardedBy = 3;
@@ -385,8 +386,8 @@ describe('applyAction — crossbow pierce shot', () => {
 
   it('hits a single enemy on the line for full damage and costs 2 moves', () => {
     const s = startState([
-      mkUnit({ id: 1, player: 1, type: 'crossbow', row: 5, col: 5 }),
-      mkUnit({ id: 2, player: 2, type: 'knight', row: 5, col: 6 }),
+      mkUnit({ id: 1, player: 1, type: 'crossbow', row: 5, col: 5, facing: 'right' }),
+      mkUnit({ id: 2, player: 2, type: 'knight', row: 5, col: 6, facing: 'left' }),
     ]);
     const res = applyAction(s, pierceAction(), mulberry32(1));
     expect(res.ok).toBe(true);
@@ -400,9 +401,9 @@ describe('applyAction — crossbow pierce shot', () => {
 
   it('hits BOTH cells on the line, including a friendly unit on the second cell', () => {
     const s = startState([
-      mkUnit({ id: 1, player: 1, type: 'crossbow', row: 5, col: 5 }),
-      mkUnit({ id: 2, player: 2, type: 'knight', row: 5, col: 6 }),
-      mkUnit({ id: 3, player: 1, type: 'knight', row: 5, col: 7 }),
+      mkUnit({ id: 1, player: 1, type: 'crossbow', row: 5, col: 5, facing: 'right' }),
+      mkUnit({ id: 2, player: 2, type: 'knight', row: 5, col: 6, facing: 'left' }),
+      mkUnit({ id: 3, player: 1, type: 'knight', row: 5, col: 7, facing: 'left' }),
     ]);
     const res = applyAction(s, pierceAction(), mulberry32(1));
     expect(res.ok).toBe(true);
@@ -665,8 +666,8 @@ describe('applyAction — craft + equip', () => {
 
   it('an ally stepping onto the dropped sword picks it up', () => {
     const s = swordReady([
-      mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, weapon: { name: 'x', icon: '', amount: 1 } }),
-      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
+      mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, weapon: { name: 'x', icon: '', amount: 1 }, facing: 'up' }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5, facing: 'up' }),
     ]);
     const crafted = applyAction(s, { kind: 'craft', unitId: 1, index: 0 }, mulberry32(1));
     if (!crafted.ok) throw new Error('craft failed');
@@ -1706,9 +1707,9 @@ describe('ward overdraw inside a pierce line', () => {
   it('a mage that died of overdraw is not hit again by the same bolt (no duplicate loot)', () => {
     // Crossbow (P2) at row 5 fires down: row 6 = warded P1 knight, row 7 = its mage.
     const s = startState([
-      mkUnit({ id: 1, player: 2, type: 'crossbow', row: 5, col: 5 }),
-      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5 }),
-      mkUnit({ id: 3, player: 1, type: 'mage', row: 7, col: 5 }),
+      mkUnit({ id: 1, player: 2, type: 'crossbow', row: 5, col: 5, facing: 'down' }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 6, col: 5, facing: 'up' }),
+      mkUnit({ id: 3, player: 1, type: 'mage', row: 7, col: 5, facing: 'up' }),
     ]);
     s.currentPlayer = 2;
     const mage = s.units.find((u) => u.id === 3)!;
@@ -1807,5 +1808,63 @@ describe('finished match', () => {
     if (!res.ok) throw new Error('end-turn should still be accepted');
     expect(res.value.currentPlayer).toBe(s.currentPlayer);
     expect(res.value.turnNumber).toBe(s.turnNumber);
+  });
+});
+
+describe('facing — back ×2, side ×1.25, turning costs a move', () => {
+  const hit = (targetFacing: 'up' | 'down' | 'left' | 'right') => {
+    // Archer (dmg 3) shooting a 0-armor archer from the cell to its LEFT.
+    const s = startState([
+      mkUnit({ id: 1, player: 1, type: 'archer', row: 5, col: 4, facing: 'right' }),
+      mkUnit({ id: 2, player: 2, type: 'catapult', row: 5, col: 5, armor: 0, hp: 9, maxHp: 9, facing: targetFacing }),
+    ]);
+    const r = applyAction(s, { kind: 'attack', unitId: 1, mode: 'shot', cost: 1, targetRow: 5, targetCol: 5, landingRow: 5, landingCol: 4 }, mulberry32(1));
+    if (!r.ok) throw new Error(r.error.code);
+    return 9 - r.value.units.find((u) => u.id === 2)!.hp;
+  };
+
+  it('a hit from the front is plain, from the side ×1.25, from the back ×2', () => {
+    expect(hit('left')).toBe(3); // looking at the archer
+    expect(hit('up')).toBe(4); // side: round(3 × 1.25)
+    expect(hit('right')).toBe(6); // back
+  });
+
+  it('striking behind costs +1 move and turns the attacker to its target', () => {
+    const s = startState([
+      mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, facing: 'up' }),
+      mkUnit({ id: 2, player: 2, type: 'knight', row: 6, col: 5, facing: 'up' }),
+    ]);
+    const cheap = applyAction(s, { kind: 'attack', unitId: 1, mode: 'shot', cost: 1, targetRow: 6, targetCol: 5, landingRow: 5, landingCol: 5 }, mulberry32(1));
+    expect(cheap.ok).toBe(false);
+    const r = applyAction(s, { kind: 'attack', unitId: 1, mode: 'shot', cost: 2, targetRow: 6, targetCol: 5, landingRow: 5, landingCol: 5 }, mulberry32(1));
+    if (!r.ok) throw new Error(r.error.code);
+    expect(r.value.units.find((u) => u.id === 1)!.facing).toBe('down');
+  });
+
+  it('a step leaves the unit facing the way it walked; walking back costs the turn', () => {
+    const s = startState([mkUnit({ id: 1, player: 1, type: 'knight', row: 5, col: 5, facing: 'up' })]);
+    expect(applyAction(s, { kind: 'move', unitId: 1, row: 6, col: 5, cost: 1 }, mulberry32(1)).ok).toBe(false);
+    const r = applyAction(s, { kind: 'move', unitId: 1, row: 6, col: 5, cost: 2 }, mulberry32(1));
+    if (!r.ok) throw new Error(r.error.code);
+    expect(r.value.units[0]!.facing).toBe('down');
+    const side = applyAction(s, { kind: 'move', unitId: 1, row: 5, col: 6, cost: 1 }, mulberry32(1));
+    if (!side.ok) throw new Error(side.error.code);
+    expect(side.value.units[0]!.facing).toBe('right');
+  });
+});
+
+describe('crossbow never shoots a line of nothing but allies', () => {
+  it('is neither offered nor accepted; an enemy on the line makes it legal again', () => {
+    const units = [
+      mkUnit({ id: 1, player: 1, type: 'crossbow', row: 5, col: 5, facing: 'right' }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 5, col: 6 }),
+    ];
+    const s = startState(units);
+    const shots = generateActionsForUnit(s, 1).filter((a) => a.kind === 'attack');
+    expect(shots).toHaveLength(0);
+    const bolt = { kind: 'attack', unitId: 1, mode: 'pierce', cost: 2, targetRow: 5, targetCol: 6, landingRow: 5, landingCol: 5, targets: [{ row: 5, col: 6 }, { row: 5, col: 7 }] } as const;
+    expect(applyAction(s, bolt, mulberry32(1)).ok).toBe(false);
+    const withEnemy = startState([...units, mkUnit({ id: 3, player: 2, type: 'knight', row: 5, col: 7, facing: 'left' })]);
+    expect(applyAction(withEnemy, bolt, mulberry32(1)).ok).toBe(true);
   });
 });

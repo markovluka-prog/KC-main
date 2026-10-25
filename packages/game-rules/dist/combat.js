@@ -1,3 +1,4 @@
+import { applyFacingDamage } from './facing.js';
 /**
  * Damage multiplier for a ranged unit firing from a mage tower. The tower buys
  * ~1.5× range, and this is what it costs: shots hit for roughly two thirds.
@@ -27,6 +28,9 @@ export function attackDamage(attacker, target, ctx) {
     if (ctx.shieldTurns[target.player] > 0) {
         damage = Math.max(0, damage - 2);
     }
+    // From the target's back ×2, side ×1.25 (facing.ts), measured from where
+    // the attacker strikes.
+    damage = applyFacingDamage(damage, target, attacker.row, attacker.col);
     // Archers always deliver at least 1 damage if their base damage > 0
     // (arrows pierce armor).
     if ((attacker.type === 'archer' || attacker.type === 'crossbow') &&

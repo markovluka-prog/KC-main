@@ -48,9 +48,14 @@ import { AI_DIFFICULTY, type AIConfig, type AIDifficulty } from './ai-config.js'
 import RAW_WEIGHTS from './ai-weights.json';
 import { AISearchWorker, isSupported as isWorkerSupported } from './ai-worker-client.js';
 import type { WorkerState } from './ai-worker-protocol.ts';
-import { beamPlanFor } from './beam-bridge.js';
+import { beamPlanFor, snapshotGameState, toPlanEntry } from './beam-bridge.js';
+import { beamPoolSupported, planTurnInPool } from './beam-pool.js';
+import { applyAction as rulesApply, generateActionsForPlayer, mulberry32 as rulesRng, applyFacingDamage, baseWeightsFor, facingOf, facingToward, scaleWeights, turnCost, winChance, type Facing, type ServerAction, type GameState } from '@kc/game-rules';
 import {
   assignRoles,
+  isPersonality,
+  PERSONALITIES,
+  type Personality,
   deriveWorldState,
   planStep,
   selectGoal,
@@ -184,6 +189,9 @@ export interface AIGameAPI {
   craftWeapon(index: number, byAi?: boolean): boolean;
   craftArmor(index: number, byAi?: boolean): boolean;
   applyCastleHealing(): void;
+  /** Execute a mage ability / build action for the selected unit (rows in
+   *  live orientation). Optional: headless stubs don't implement it. */
+  performEngineAction?(action: ServerAction): boolean;
   isUnitInOwnCastle(unit: Unit): boolean;
   skipSelected(byAi?: boolean): void;
   canAfford(inv: Record<ArtifactName, number>, recipe: SpellRecipe): boolean;
@@ -240,7 +248,10 @@ export type AIActionType =
   | 'craft'
   | 'craft-armor'
   | 'castle-heal'
-  | 'skip';
+  | 'skip'
+  // A canonical-engine action the live game executes through
+  // AIGameAPI.performEngineAction (mage abilities, building) — see beam-bridge.
+  | 'engine';
 
 // ── Scenario strategy (replaces the old Q-learning brain) ────────────────────
 // The AI reads the board once per turn and decides which STAGE of a deliberate
@@ -267,7 +278,8 @@ export type StrategyStage =
   | 'march'
   | 'assault'
   | 'mop-up'
-  | 'defend';
+  | 'defend'
+  | 'hunt'; // berserker personality only: chase the nearest enemy unit
 
 interface Strategy {
   stage: StrategyStage;
@@ -305,6 +317,8 @@ export interface AIAction {
    *  game keys the shot by the FIRST cell; targetRow/Col names the first
    *  enemy on the line so the scorers can price the hit. */
   pierce?: Array<{ row: number; col: number }>;
+  /** type 'engine' only: the ServerAction, rows already in live orientation. */
+  server?: ServerAction;
 }
 
 interface PlanEntry {
@@ -333,6 +347,8 @@ interface LightUnit {
   wardedBy?: number | null;
   /** Mage only: energy left to pay for absorbed hits. */
   energy?: number;
+  /** Which way it looks (facing.ts) — turning costs a move, the back takes ×2. */
+  facing?: Facing;
 }
 
 interface LightState {
@@ -544,6 +560,15 @@ export class AIPlayer {
 
   setDifficulty(difficulty: AIDifficulty | string): void {
     this.difficulty = difficulty;
+    // "<difficulty>@<personality>" (e.g. "hard@berserker") picks a GOAP
+    // personality on top of the difficulty — see goap.ts PERSONALITIES.
+    const [base, persona] = String(difficulty).split('@');
+    this.personality = isPersonality(persona) ? persona : 'strategist';
+    difficulty = base as AIDifficulty;
+    // "chance:NN" — the target-probability AI (see chanceStep): NN = the AI's
+    // own win chance it steers towards, in percent.
+    const m = /^chance:(\d+(?:\.\d+)?)$/.exec(String(difficulty));
+    this.chanceTarget = m ? Math.max(0, Math.min(100, Number(m[1]))) / 100 : null;
     this.config = AI_DIFFICULTY[difficulty as AIDifficulty] ?? AI_DIFFICULTY.medium;
     this.frameWait = this.config.frameWait;
     this.reset();
@@ -551,6 +576,8 @@ export class AIPlayer {
 
   setConfig(config: Partial<AIConfig> & { label?: string }): void {
     this.difficulty = config.label ?? 'custom';
+    this.chanceTarget = null;
+    this.personality = 'strategist';
     // Story presets (main.ts) predate the intelligence/strategy knobs and don't
     // set them. Merging over `medium` would silently inherit medium's tuning and
     // make an early "Новичок" fight as hard as a mid-game one, so the strength
@@ -731,11 +758,17 @@ export class AIPlayer {
       weAreInEnemyCastle: myUnitsInEnemyCastle >= 1,
       enemyDefendersPresent: enemyDefenders > 0,
       enemyCastleEmpty: enemyDefenders === 0,
+      enemyArmyBroken: enemies.length <= 2 || forceRatio >= 1.8,
     });
 
-    const goal = selectGoal(world);
-    const { step } = planStep(goal, world);
-    const stage: StrategyStage = step ? step.name : myUnitsInEnemyCastle >= 1 ? 'mop-up' : 'march';
+    const persona = PERSONALITIES[this.personality];
+    const goal = selectGoal(world, persona.goals);
+    const { step } = planStep(goal, world, persona.actions);
+    const stage: StrategyStage = step
+      ? step.name
+      : myUnitsInEnemyCastle >= 1
+        ? 'mop-up'
+        : (persona.idle ?? 'march');
 
     // Map the chosen stage to the same goalRow/goalCol/pull/hold*/ruinsFarmers
     // values the ladder used for that branch — this is a lookup by stage name,
@@ -796,7 +829,26 @@ export class AIPlayer {
         pull = 0.75;
         keepRuinsGuard = true;
         break;
+      case 'hunt': {
+        // Berserker: head for the enemy unit nearest our army's centre.
+        const cr = mine.reduce((a, u) => a + u.row, 0) / Math.max(1, mine.length);
+        const cc = mine.reduce((a, u) => a + u.col, 0) / Math.max(1, mine.length);
+        let best: { row: number; col: number } | null = null;
+        let bestD = Infinity;
+        for (const e of enemies) {
+          const d = Math.abs(e.row - cr) + Math.abs(e.col - cc);
+          if (d < bestD) {
+            bestD = d;
+            best = { row: e.row, col: e.col };
+          }
+        }
+        goalCell = best ?? enemyCastle;
+        pull = 1.0;
+        break;
+      }
     }
+    pull = Math.min(1, pull * persona.pull);
+    if (ruinsFarmers > 0) ruinsFarmers = persona.ruinsFarmers;
 
     this.takeRuinsSinceTurn =
       stage === 'take-ruins' ? (this.takeRuinsSinceTurn < 0 ? this.myTurnCount : this.takeRuinsSinceTurn) : -1;
@@ -880,7 +932,15 @@ export class AIPlayer {
   }
 
   reset(): void {
+    // A think still running for the previous match must not land in this one.
+    this.chanceGen++;
+    this.chanceBusy = false;
+    this.chanceNext = null;
+    this.chanceLastProb = null;
     this.frameCounter = 0;
+    this.beamGen++;
+    this.beamBusy = false;
+    this.beamPlan = null;
     this.strategyCache.clear();
     this.turnPlan = null;
     this.strategy = null;
@@ -926,9 +986,21 @@ export class AIPlayer {
     if (game.mode !== 'ai') return;
     if (game.currentPlayer !== this.player) return;
     if (game.winner !== null) return;
+    if (this.chanceTarget !== null) {
+      try {
+        this.chanceStep();
+      } catch (err) {
+        console.error('Chance AI step failed; forcing end of turn.', err);
+        this.chanceBusy = false;
+        this.chanceNext = null;
+        this.thinkProgress = null;
+        this.endTurnSafely();
+      }
+      return;
+    }
     // While thinking (either think path) run every frame so the progress bar
     // animates smoothly; otherwise honour the frameWait pacing.
-    if (this.mctsRoot === null && !this.workerBusy) {
+    if (this.mctsRoot === null && !this.workerBusy && !this.beamBusy) {
       this.frameCounter += 1;
       if (this.frameCounter < this.frameWait) return;
       this.frameCounter = 0;
@@ -944,6 +1016,166 @@ export class AIPlayer {
   }
 
   /** Reset watchdog state and force the AI turn to end, swallowing errors. */
+  // ── "Свой шанс": steer the AI's win probability to a chosen target ───────
+  // Win probability of a position = share of the game tree's branches below
+  // it that end in the AI's win, estimated by sampling random branches to the
+  // end (chance-worker.ts, one worker per core). Each AI action: score up to
+  // CHANCE_CANDIDATES legal actions that way and play the one whose
+  // probability is closest to the target (an immediately winning action is
+  // always taken). Target 100% = always the action with the best chances.
+  private chanceTarget: number | null = null;
+  /** GOAP personality (goap.ts PERSONALITIES), from the "@name" suffix of the difficulty. */
+  personality: Personality = 'strategist';
+  private chanceBusy = false;
+  private chanceNext: ServerAction | null = null;
+  private chanceLastProb: number | null = null;
+  private chanceGen = 0;
+  private static chancePool: Worker[] | null = null;
+  // Up to 10 candidates; 2 short samples each in the first halving round,
+  // doubling per round (~96 samples per action). Each sample is a 200-action
+  // random branch scored by the static evaluation (see chance-worker.ts):
+  // ~1 s per AI turn.
+  private static readonly CHANCE_CANDIDATES = 10;
+  private static readonly CHANCE_SAMPLES = 2;
+  private static readonly CHANCE_MAX_LEN = 200;
+
+  /** Last estimated AI win chance after its chosen action (for the HUD). */
+  get chanceEstimate(): number | null {
+    return this.chanceLastProb;
+  }
+
+  private static pool(): Worker[] {
+    if (!AIPlayer.chancePool) {
+      const n = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 1));
+      AIPlayer.chancePool = Array.from(
+        { length: n },
+        () => new Worker(new URL('./chance-worker.ts', import.meta.url), { type: 'module' }),
+      );
+    }
+    return AIPlayer.chancePool;
+  }
+
+  private chanceStep(): void {
+    const game = this.game;
+    if (this.chanceBusy) {
+      game.renderSidebar(); // keep the progress bar moving
+      return;
+    }
+    if (this.chanceNext) {
+      const a = this.chanceNext;
+      this.chanceNext = null;
+      if (a.kind === 'end-turn') {
+        game.forceEndTurn();
+        return;
+      }
+      const entry = toPlanEntry(a, game.player1Bottom);
+      const unit = entry && game.board.units.find((u: Unit) => u.id === entry.unitId && u.alive());
+      if (!entry || !unit || !game.canUnitAct(unit)) {
+        game.forceEndTurn();
+        return;
+      }
+      game.selectUnit(unit.row, unit.col, true);
+      if (game.selectedUnit?.id === unit.id) this.executeAction(entry.action);
+      else game.forceEndTurn();
+      return;
+    }
+
+    // Think about the next action.
+    const state = snapshotGameState(game);
+    const rng = rulesRng(1);
+    const mappable = new Set(['move', 'attack', 'craft', 'craft-armor', 'castle-heal', 'mage-attack', 'mage-ward', 'mage-drain', 'mage-heal', 'mage-burn-bridge', 'build-tower', 'build-bridge']);
+    const kids: Array<{ a: ServerAction; s: GameState }> = [];
+    for (const a of [...generateActionsForPlayer(state, this.player), { kind: 'end-turn' } as ServerAction]) {
+      if (a.kind !== 'end-turn' && !mappable.has(a.kind)) continue;
+      const r = rulesApply(state, a, rng);
+      if (!r.ok) continue;
+      if (r.value.winner === this.player) {
+        this.chanceNext = a; // a winning action needs no thinking
+        this.chanceLastProb = 1;
+        return;
+      }
+      kids.push({ a, s: r.value });
+    }
+    if (kids.length === 1) {
+      this.chanceNext = kids[0]!.a;
+      return;
+    }
+    // Pre-rank every action by the fitted formula N = winChance() (instant),
+    // then spend the playouts only on the CHANCE_CANDIDATES whose N is closest
+    // to the target — instead of a random 10, which could miss the best move.
+    const target = this.chanceTarget ?? 1;
+    const ranked = kids
+      .map((k) => ({ k, gap: Math.abs(winChance(k.s, this.player) - target) + Math.random() * 1e-9 }))
+      .sort((x, y) => x.gap - y.gap);
+    const pick = ranked.slice(0, AIPlayer.CHANCE_CANDIDATES).map((r) => r.k);
+    const workers = AIPlayer.pool();
+    const gen = this.chanceGen;
+    this.chanceBusy = true;
+    this.thinkProgress = 0;
+    game.renderSidebar();
+
+    // One batch of short samples for candidate `i`, on whichever worker is free.
+    const free = [...workers];
+    const waiting: Array<() => void> = [];
+    const sample = (i: number, n: number): Promise<{ wins: number; samples: number }> =>
+      new Promise((resolve) => {
+        const run = () => {
+          const w = free.pop()!;
+          w.onmessage = (e: MessageEvent<{ wins: number; samples: number }>) => {
+            free.push(w);
+            waiting.shift()?.();
+            resolve(e.data);
+          };
+          w.postMessage({
+            id: i,
+            state: pick[i]!.s,
+            samples: n,
+            maxLen: AIPlayer.CHANCE_MAX_LEN,
+            player: this.player,
+            seed: (Math.random() * 2 ** 31) | 0,
+          });
+        };
+        if (free.length) run();
+        else waiting.push(run);
+      });
+
+    // Successive halving: every candidate gets a few samples, the half whose
+    // probability is furthest from the target is dropped, the survivors get
+    // twice as many, and so on until one is left. Samples go where the
+    // decision is actually close instead of being spread evenly.
+    const wins = new Array<number>(pick.length).fill(0);
+    const seen = new Array<number>(pick.length).fill(0);
+    const prob = (i: number) => wins[i]! / Math.max(1, seen[i]!);
+    void (async () => {
+      let alive = pick.map((_, i) => i);
+      let per = AIPlayer.CHANCE_SAMPLES;
+      const rounds = Math.max(1, Math.ceil(Math.log2(alive.length)));
+      for (let round = 0; round < rounds && alive.length > 1; round++) {
+        const results = await Promise.all(
+          alive.flatMap((i) => {
+            const chunk = Math.ceil(per / workers.length);
+            return Array.from({ length: Math.ceil(per / chunk) }, () => sample(i, chunk).then((r) => ({ i, r })));
+          }),
+        );
+        if (gen !== this.chanceGen) return; // a new match started meanwhile
+        for (const { i, r } of results) {
+          wins[i] += r.wins;
+          seen[i] += r.samples;
+        }
+        alive.sort((a, b) => Math.abs(prob(a) - target) - Math.abs(prob(b) - target));
+        alive = alive.slice(0, Math.max(1, Math.ceil(alive.length / 2)));
+        per *= 2;
+        this.thinkProgress = (round + 1) / rounds;
+      }
+      if (gen !== this.chanceGen) return;
+      const best = alive[0]!;
+      this.chanceNext = pick[best]!.a;
+      this.chanceLastProb = prob(best);
+      this.chanceBusy = false;
+      this.thinkProgress = null;
+    })();
+  }
+
   private endTurnSafely(): void {
     this.turnPlan = null;
     this.watchdogSig = '';
@@ -993,7 +1225,7 @@ export class AIPlayer {
     // frame-sliced search, while the off-thread worker leaves it null and tracks
     // its own in-flight state in `workerBusy`. Checking only the former let the
     // watchdog kill every worker-backed turn after WATCHDOG_MAX_STALL frames.
-    if (this.mctsRoot !== null || this.workerBusy) {
+    if (this.mctsRoot !== null || this.workerBusy || this.beamBusy) {
       this.watchdogStall = 0;
     } else {
       const sig = this.progressSignature();
@@ -1116,6 +1348,21 @@ export class AIPlayer {
       // When MCTS is on, the search runs TIME-SLICED across frames so the screen
       // keeps painting and the "thinking" progress bar animates. We spend one
       // ~40 ms slice per frame and only build the plan once the search finishes.
+      // The measured difficulty ladder (game-rules beam-presets.ts, verified by
+      // scripts/ladder.mjs): beam + playouts on a pool of workers. Before this
+      // it was only a fallback behind the MCTS worker below, so the browser
+      // never actually played the levels the ladder measured.
+      if (this.config.useBeamSearch) {
+        const plan = this.consumeBeamPlan();
+        if (plan === null) return; // still thinking — keep painting
+        if (plan.length === 0) {
+          game.forceEndTurn();
+          return;
+        }
+        this.turnPlan = plan;
+        AIPlayer.tallyPlan(this.turnPlan);
+        return;
+      }
       if (this.config.useMCTS) {
         // Preferred path: search entirely off the main thread. Frame-slicing
         // still blocks the main thread for the length of every slice, which on
@@ -1220,7 +1467,10 @@ export class AIPlayer {
     // evaluate() already accounts for castle pressure/economy/positioning, so
     // rewriting its plan with the scenario script would only undo what it chose.
     if (this.config.useBeamSearch) {
-      const plan = beamPlanFor(game, this.player, BEAM_DIFFICULTY[this.config.useBeamSearch]);
+      const tilt = PERSONALITIES[this.personality].weights;
+      const beamConfig = BEAM_DIFFICULTY[this.config.useBeamSearch];
+      const weights = Object.keys(tilt).length ? scaleWeights(tilt, baseWeightsFor(beamConfig)) : undefined;
+      const plan = beamPlanFor(game, this.player, beamConfig, weights);
       if (plan.length > 0) return plan;
     }
     this.selectFocusTarget();
@@ -1934,6 +2184,10 @@ export class AIPlayer {
     const game = this.game;
     if (!action) {
       game.skipSelected(true);
+      return;
+    }
+    if (action.type === 'engine') {
+      if (!action.server || !game.performEngineAction?.(action.server)) game.skipSelected(true);
       return;
     }
     if (action.type === 'attack') {
@@ -3487,6 +3741,7 @@ export class AIPlayer {
           maxArmor: u.maxArmor,
           activated: (u as Unit & { activated?: boolean }).activated === true,
           wardedBy: u.wardedBy ?? null,
+          facing: u.facing,
           ...(u.type === 'mage' ? { energy: u.energy } : {}),
         })),
       shieldTurns: { 1: game.shieldTurns[1], 2: game.shieldTurns[2] },
@@ -3549,6 +3804,7 @@ export class AIPlayer {
     ) {
       raw = Math.max(1, Math.round(raw * TOWER_DAMAGE_FACTOR));
     }
+    raw = applyFacingDamage(raw, target, attacker.row, attacker.col); // back ×2, side ×1.25
     let dmg = Math.max(0, raw - target.armor);
     if (ns.shieldTurns[target.player] > 0) dmg = Math.max(0, dmg - 2);
     target.hp -= dmg;
@@ -3572,6 +3828,7 @@ export class AIPlayer {
       ns.activationsLeft = Math.max(0, ns.activationsLeft - 1);
     }
     if (action.type === 'move' && action.row !== undefined && action.col !== undefined) {
+      unit.facing = facingToward(unit.row, unit.col, action.row, action.col, facingOf(unit));
       unit.row = action.row;
       unit.col = action.col;
       unit.movesLeft -= action.cost ?? 1;
@@ -3596,10 +3853,14 @@ export class AIPlayer {
           u.hp > 0,
       );
       if (target) {
+        const turned = turnCost(unit, target.row, target.col) > 0;
         this.lightHit(ns, unit, target);
         if (action.landingRow !== undefined && action.landingCol !== undefined) {
           unit.row = action.landingRow;
           unit.col = action.landingCol;
+        }
+        if (turned || unit.row !== action.row || unit.col !== action.col) {
+          unit.facing = facingToward(unit.row, unit.col, target.row, target.col, facingOf(unit));
         }
       }
       unit.movesLeft -= action.cost ?? 2;
@@ -4033,7 +4294,33 @@ export class AIPlayer {
     return score * this.config.economyWeight;
   }
 
+  /**
+   * The light-state moves/attacks with the facing rule on top (facing.ts):
+   * stepping or striking into the unit's own back half costs +1 — the same
+   * surcharge generateLegalMoves/generateAttackActions add, applied once here
+   * so the hand-mirrored per-type generator below stays as it was.
+   */
   private generateActionsForLightState(state: LightState, unit: LightUnit): AIAction[] {
+    const out: AIAction[] = [];
+    for (const a of this.generateBaseActionsForLightState(state, unit)) {
+      const cell =
+        a.type === 'move'
+          ? { row: a.row, col: a.col }
+          : a.type === 'attack'
+            ? (a.pierce?.[0] ?? { row: a.targetRow, col: a.targetCol })
+            : null;
+      if (!cell || cell.row === undefined || cell.col === undefined) {
+        out.push(a);
+        continue;
+      }
+      const turn = turnCost(unit, cell.row, cell.col);
+      if (turn === 0) out.push(a);
+      else if ((a.cost ?? 1) + turn <= unit.movesLeft) out.push({ ...a, cost: (a.cost ?? 1) + turn });
+    }
+    return out;
+  }
+
+  private generateBaseActionsForLightState(state: LightState, unit: LightUnit): AIAction[] {
     const actions: AIAction[] = [];
     const ortho: Array<[number, number]> = [
       [-1, 0],
@@ -5331,6 +5618,51 @@ export class AIPlayer {
    * search is still running (the caller should return and try again next frame).
    * On any worker failure this permanently falls back to the in-thread search.
    */
+  private beamBusy = false;
+  private beamPlan: PlanEntry[] | null = null;
+  /** Bumped on reset so a search still running for an old game is ignored. */
+  private beamGen = 0;
+
+  /** The beam/rollout plan for this turn from the worker pool (null while thinking). */
+  private consumeBeamPlan(): PlanEntry[] | null {
+    if (this.beamPlan !== null) {
+      const plan = this.beamPlan;
+      this.beamPlan = null;
+      this.beamBusy = false;
+      this.thinkProgress = null;
+      return plan;
+    }
+    if (this.beamBusy) {
+      this.game.renderSidebar();
+      return null;
+    }
+    const game = this.game;
+    const beamConfig = BEAM_DIFFICULTY[this.config.useBeamSearch!];
+    const tilt = PERSONALITIES[this.personality].weights;
+    const weights = Object.keys(tilt).length ? scaleWeights(tilt, baseWeightsFor(beamConfig)) : undefined;
+    if (!beamPoolSupported()) return beamPlanFor(game, this.player, beamConfig, weights);
+    const state = snapshotGameState(game);
+    const gen = ++this.beamGen;
+    const toEntries = (actions: ServerAction[]): PlanEntry[] =>
+      actions.map((a) => toPlanEntry(a, game.player1Bottom)).filter((e): e is PlanEntry => !!e);
+    this.beamBusy = true;
+    this.thinkProgress = 0;
+    game.renderSidebar();
+    planTurnInPool(state, this.player, beamConfig, state.turnNumber + 1, weights, (p) => {
+      if (gen !== this.beamGen) return;
+      this.thinkProgress = p;
+      game.renderSidebar();
+    })
+      .then((actions) => {
+        if (gen === this.beamGen) this.beamPlan = toEntries(actions);
+      })
+      .catch(() => {
+        // A worker failed: plan on the main thread instead of stalling the turn.
+        if (gen === this.beamGen) this.beamPlan = beamPlanFor(game, this.player, beamConfig, weights);
+      });
+    return null;
+  }
+
   private consumeWorkerPlan(): PlanEntry[] | null {
     if (this.workerPlan !== null) {
       const plan = this.workerPlan;

@@ -24,7 +24,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "arena": "vitest run --config vitest.arena.config.ts"
+    "arena": "vitest run --config vitest.arena.config.ts",
+    "solve": "tsc && node scripts/solve.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^2.1.9",

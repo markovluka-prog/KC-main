@@ -1,4 +1,5 @@
 import type { Action, AttackAction, BoardLike, MoveAction, UnitState } from './types.js';
+import { turnCost } from './facing.js';
 import { insideBoard } from './board.js';
 import { ARCHER_SQUARE_RADIUS, TOWER_RANGE_MULTIPLIER } from './constants.js';
 
@@ -64,14 +65,16 @@ export function generateLegalMoves(board: BoardLike, unit: UnitState): MoveActio
   if (unit.movesLeft <= 0) return [];
   const moves: MoveAction[] = [];
 
-  // All unit types: move 1 cell orthogonally per move point (up to movesLeft)
+  // All unit types: move 1 cell orthogonally per move point (up to movesLeft).
+  // Stepping into the unit's own back half costs +1 to turn round (facing.ts).
   for (const dir of ORTHO_DIRS) {
+    const turn = turnCost(unit, unit.row + dir[0], unit.col + dir[1]);
     for (let step = 1; step <= unit.maxMoves; step += 1) {
-      if (step > unit.movesLeft) break;
+      if (step + turn > unit.movesLeft) break;
       const nr = unit.row + dir[0] * step;
       const nc = unit.col + dir[1] * step;
       if (!board.isFree(nr, nc)) break;
-      moves.push({ kind: 'move', row: nr, col: nc, cost: step });
+      moves.push({ kind: 'move', row: nr, col: nc, cost: step + turn });
       // All non-archer unit types can only step 1 cell at a time (cost=1 per step)
       if (unit.type !== 'archer') break;
     }
@@ -83,6 +86,8 @@ export function generateLegalMoves(board: BoardLike, unit: UnitState): MoveActio
   // the same as its jump attack — so it isn't a cheap way to outrun infantry.
   if (unit.type === 'cavalry' && unit.movesLeft >= CAVALRY_RIVER_JUMP_COST) {
     for (const dir of ORTHO_DIRS) {
+      const leapCost = CAVALRY_RIVER_JUMP_COST + turnCost(unit, unit.row + dir[0], unit.col + dir[1]);
+      if (unit.movesLeft < leapCost) continue;
       const wr = unit.row + dir[0];
       const wc = unit.col + dir[1];
       // The adjacent cell must be water (bridges are crossed normally instead).
@@ -94,14 +99,28 @@ export function generateLegalMoves(board: BoardLike, unit: UnitState): MoveActio
       if (!board.isFree(lr, lc)) continue;
       // Don't duplicate a move the normal walk already produced.
       if (moves.some((m) => m.row === lr && m.col === lc)) continue;
-      moves.push({ kind: 'move', row: lr, col: lc, cost: CAVALRY_RIVER_JUMP_COST });
+      moves.push({ kind: 'move', row: lr, col: lc, cost: leapCost });
     }
   }
 
   return moves;
 }
 
+/**
+ * Every attack `unit` can make now. Striking into its own back half costs
+ * TURN_COST extra on top of the attack's own cost (facing.ts) — added here
+ * once for every unit type, so the per-type generators below stay as is.
+ */
 export function generateAttackActions(board: BoardLike, unit: UnitState): AttackAction[] {
+  const out: AttackAction[] = [];
+  for (const a of generateBaseAttackActions(board, unit)) {
+    const cost = a.cost + turnCost(unit, a.targetRow, a.targetCol);
+    if (cost <= unit.movesLeft) out.push(cost === a.cost ? a : { ...a, cost });
+  }
+  return out;
+}
+
+function generateBaseAttackActions(board: BoardLike, unit: UnitState): AttackAction[] {
   if (unit.movesLeft <= 0) return [];
   const attacks: AttackAction[] = [];
 
@@ -154,7 +173,10 @@ export function generateAttackActions(board: BoardLike, unit: UnitState): Attack
           if (!insideBoard(r, c)) break;
           line.push({ row: r, col: c });
           const cell = board.unitAt(r, c);
-          if (cell) hasTarget = true;
+          // Only an ENEMY on the line makes it a shot. Allies on it still get
+          // hit (friendly fire), but a line of nothing but allies is not a
+          // target — it used to be offered, letting a crossbow shoot its own.
+          if (cell && cell.player !== unit.player) hasTarget = true;
         }
         if (line.length === 0 || !hasTarget) continue;
         const first = line[0]!;

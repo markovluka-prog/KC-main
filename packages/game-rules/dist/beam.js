@@ -15,6 +15,7 @@
  * actions once that budget is exhausted, so MAX_DEPTH below is a safety cap,
  * not the real limiter.
  */
+import { PARTS } from './constants.js';
 import { applyAction, endTurn } from './apply.js';
 import { candidateActions } from './candidates.js';
 import { evaluate } from './evaluate.js';
@@ -43,24 +44,19 @@ function actableUnitIds(state, player) {
  * only slow hashing without ever distinguishing two otherwise-identical plans.
  */
 export function stateKey(state) {
-    const units = state.units
-        .filter((u) => u.hp > 0)
-        .map((u) => {
-        const bp = Object.entries(u.backpack)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([k, v]) => `${k}=${v}`)
-            .join(',');
-        return `${u.id}:${u.row},${u.col},${u.hp},${u.armor},${u.done ? 1 : 0},${u.movesLeft},[${bp}]`;
-    })
-        .sort()
-        .join('|');
-    return [
-        units,
-        `act:${state.activatedCount}`,
-        `pending:${state.pendingWeaponEquip ? state.pendingWeaponEquip.name : '-'}`,
-        `shield:${state.shieldTurns[1]},${state.shieldTurns[2]}`,
-        `buff:${state.damageBuff[1]},${state.damageBuff[2]}`,
-    ].join('#');
+    // Hot path (one call per candidate plan per beam depth): a plain string
+    // build in a fixed part order, no per-unit sort/localeCompare. Unit array
+    // order is stable across plans (the reducer never reorders units), so the
+    // old sort of the unit strings bought nothing.
+    let key = '';
+    for (const u of state.units) {
+        if (u.hp <= 0)
+            continue;
+        const bp = u.backpack;
+        key += `${u.id}:${u.row},${u.col},${u.hp},${u.armor},${u.done ? 1 : 0},${u.movesLeft},[${bp[PARTS[0]] ?? 0},${bp[PARTS[1]] ?? 0},${bp[PARTS[2]] ?? 0},${bp[PARTS[3]] ?? 0},${bp[PARTS[4]] ?? 0}]|`;
+    }
+    const pending = state.pendingWeaponEquip ? state.pendingWeaponEquip.name : '-';
+    return `${key}#${state.activatedCount}#${pending}#${state.shieldTurns[1]},${state.shieldTurns[2]}#${state.damageBuff[1]},${state.damageBuff[2]}`;
 }
 /** Deduplicate plans by stateKey, keeping the first (highest-scored, since
  * callers sort before calling this) occurrence of each distinct position. */
@@ -118,9 +114,12 @@ function searchPlans(root, me, options) {
     // makes `planTurn`/`planTurnWithReply` a pure function of (state, me,
     // options) — same inputs, same plan, every time.
     const rng = mulberry32(options.rngSeed ?? 1);
-    const rootPlan = { actions: [], state: root, score: evaluate(root, me) };
+    const rootPlan = { actions: [], state: root, score: evaluate(root, me, options.weights) };
     let beam = [rootPlan];
     let best = rootPlan;
+    // Every depth's surviving beam, so reply lookahead can pick finalists that
+    // stop early (e.g. "kill and stop") instead of only the deepest plans.
+    const all = [rootPlan];
     for (let depth = 0; depth < maxDepth; depth++) {
         const next = [];
         for (const plan of beam) {
@@ -136,7 +135,7 @@ function searchPlans(root, me, options) {
                     next.push({
                         actions: [...plan.actions, action],
                         state: result.value,
-                        score: evaluate(result.value, me),
+                        score: evaluate(result.value, me, options.weights),
                     });
                 }
             }
@@ -147,11 +146,12 @@ function searchPlans(root, me, options) {
         const deduped = dedupe(next);
         const width = Math.max(1, options.beamWidth);
         beam = noiseChance > 0 ? pickWithNoise(deduped, width, noiseChance, noiseTopK, rng) : deduped.slice(0, width);
+        all.push(...beam);
     }
     for (const plan of beam)
         if (plan.score > best.score)
             best = plan;
-    return { beam, best };
+    return { beam, best, all };
 }
 /**
  * Beam search over one player's turn. Returns the action sequence
@@ -170,6 +170,15 @@ export function planTurn(root, me, options) {
     return searchPlans(root, me, options).best.actions;
 }
 /**
+ * The `count` best distinct plans the beam found at ANY depth (deduplicated by
+ * resulting position, best-first) — the candidate list for searches that
+ * re-rank plans by something deeper than the static evaluation.
+ */
+export function candidatePlans(root, me, options, count) {
+    const { all } = searchPlans(root, me, options);
+    return dedupe([...all].sort((a, b) => b.score - a.score)).slice(0, Math.max(1, count));
+}
+/**
  * `planTurn`, but the top `replyCandidates` finalists are re-ranked by how
  * the position looks after the opponent's own best reply, not just
  * immediately after `me`'s move. This is what actually rejects the
@@ -184,7 +193,8 @@ export function planTurn(root, me, options) {
  * and simulating one would just waste the budget.
  */
 export function planTurnWithReply(root, me, options) {
-    const { beam } = searchPlans(root, me, options);
+    const { all } = searchPlans(root, me, options);
+    const beam = dedupe([...all].sort((a, b) => b.score - a.score));
     if (beam.length === 0)
         return [];
     const opp = me === 1 ? 2 : 1;
@@ -212,9 +222,12 @@ export function planTurnWithReply(root, me, options) {
             beamWidth: replyBeamWidth,
             maxDepth: replyMaxDepth,
         });
-        // oppBest.score is FROM THE OPPONENT'S perspective (evaluate(..., opp)),
-        // so negate it to get my perspective on the position after their best reply.
-        const replyScore = -oppBest.score;
+        // Score the position after their best reply from MY perspective.
+        // evaluate() is not antisymmetric (hanging pieces, raid threat and
+        // retreat terms are one-sided), so −evaluate(…, opp) is a different
+        // function: it ignored my own hanging units and let hard/impossible pick
+        // plans that look bad for the opponent instead of good for me.
+        const replyScore = evaluate(oppBest.state, me);
         if (replyScore > bestReplyScore) {
             bestReplyScore = replyScore;
             bestFinalist = plan;

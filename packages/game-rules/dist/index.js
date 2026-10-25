@@ -18,4 +18,6 @@ export * from './candidates.js';
 export * from './beam.js';
 export * from './beam-presets.js';
 export * from './greedy.js';
+export * from './rollout.js';
+export * from './facing.js';
 //# sourceMappingURL=index.js.map

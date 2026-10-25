@@ -32,6 +32,10 @@ export interface WorldState {
   weAreInEnemyCastle: boolean;
   enemyDefendersPresent: boolean;
   enemyCastleEmpty: boolean;
+  /** Enemy army is down to a remnant (≤2 units, or we outweigh it ~2:1).
+   *  Only the berserker personality plans on it; optional so older callers
+   *  and tests that build a WorldState by hand stay valid. */
+  enemyArmyBroken?: boolean;
 }
 
 export function deriveWorldState(facts: WorldState): WorldState {
@@ -60,7 +64,8 @@ export type StrategyStageName =
   | 'march'
   | 'assault'
   | 'mop-up'
-  | 'defend';
+  | 'defend'
+  | 'hunt';
 
 const leaveCastle: GoapAction = {
   name: 'sally',
@@ -135,7 +140,7 @@ export const ACTIONS: GoapAction[] = [
 // ── Goals ─────────────────────────────────────────────────────────────────
 
 export interface GoapGoal {
-  name: 'SecureHome' | 'WinByCastle';
+  name: 'SecureHome' | 'WinByCastle' | 'DestroyArmy' | 'BuildUp';
   satisfied: (s: WorldState) => boolean;
   insistence: (s: WorldState) => number;
 }
@@ -225,6 +230,162 @@ export function planStep(
   const chain = search(state, 0, []);
   if (!chain || chain.length === 0) return { step: null, chain: [] };
   return { step: chain[0]!, chain };
+}
+
+// ── Personalities ─────────────────────────────────────────────────────────
+//
+// Each personality is its OWN goal + action set — a different way to win, not
+// a different difficulty. The planner (selectGoal/planStep) is shared; only
+// what it may want and do changes. `strategist` is the original balanced plan
+// above, untouched.
+//
+//   strategist — ruins → arm up → hold the bridge → march → assault (balanced)
+//   berserker  — straight at the enemy army; storms the castle once it's broken
+//   conqueror  — skips the economy, races for the enemy castle, defends little
+//   survivor   — guards home, farms and arms up, attacks only once clearly ahead
+
+export type Personality = 'strategist' | 'berserker' | 'conqueror' | 'survivor';
+
+export interface PersonalityPlan {
+  goals: GoapGoal[];
+  actions: GoapAction[];
+  /** Stage to sit in when the chosen goal is already satisfied (no step). */
+  idle: StrategyStageName | null;
+  /** Multiplier on the stage's pull toward its goal cell (clamped to 1). */
+  pull: number;
+  /** Units kept farming the ruins when a stage asks for farmers. */
+  ruinsFarmers: number;
+  /** Evaluation-weight multipliers (by FEATURES path, see game-rules
+   *  evaluate.ts) — how the personality tilts the beam/rollout search, which
+   *  every difficulty plans with and which bypasses the GOAP stages. */
+  weights: Record<string, number>;
+}
+
+const brokenOrAhead = (s: WorldState) => !!s.enemyArmyBroken;
+
+// Berserker ──────────────────────────────────────────────────────────────
+const huntArmy: GoapAction = {
+  name: 'hunt',
+  pre: (s) => s.sallyDone && !s.enemyArmyBroken,
+  effect: (s) => ({ ...s, enemyArmyBroken: true }),
+  cost: 1,
+};
+const stormCastle: GoapAction = {
+  name: 'assault',
+  pre: (s) => s.sallyDone && !s.weAreInEnemyCastle && brokenOrAhead(s),
+  effect: (s) => ({ ...s, weAreInEnemyCastle: true }),
+  cost: 1,
+};
+const lastStand: GoapAction = {
+  name: 'defend',
+  pre: (s) => s.enemyNearOurDoor && s.forceRatioBucket === 'behind',
+  effect: (s) => ({ ...s, enemyNearOurDoor: false }),
+  cost: 0,
+};
+const destroyArmy: GoapGoal = {
+  name: 'DestroyArmy',
+  satisfied: (s) => !!s.enemyArmyBroken,
+  insistence: (s) => (s.enemyArmyBroken ? 0 : 70),
+};
+const crushCastle: GoapGoal = {
+  name: 'WinByCastle',
+  satisfied: (s) => s.weAreInEnemyCastle && !s.enemyDefendersPresent,
+  insistence: (s) => (s.enemyArmyBroken ? 90 : 40),
+};
+const onlyIfLosing: GoapGoal = {
+  name: 'SecureHome',
+  satisfied: (s) => !s.enemyNearOurDoor || s.forceRatioBucket !== 'behind',
+  insistence: (s) => (s.enemyNearOurDoor && s.forceRatioBucket === 'behind' ? 100 : 0),
+};
+
+// Conqueror ──────────────────────────────────────────────────────────────
+const rushCastle: GoapAction = {
+  name: 'march',
+  pre: (s) => s.sallyDone && !s.weAreInEnemyCastle,
+  effect: (s) => ({ ...s, weAreInEnemyCastle: true }),
+  cost: 2, // an open castle (assaultCastle, cost 1) is preferred when there is one
+};
+const seizeCastle: GoapGoal = {
+  name: 'WinByCastle',
+  satisfied: (s) => s.weAreInEnemyCastle && !s.enemyDefendersPresent,
+  insistence: (s) => 80 + (s.enemyCastleEmpty ? 15 : 0),
+};
+
+// Survivor ───────────────────────────────────────────────────────────────
+const guardHome: GoapAction = {
+  name: 'defend',
+  pre: (s) => s.enemyNearOurDoor,
+  effect: (s) => ({ ...s, enemyNearOurDoor: false }),
+  cost: 0,
+};
+const alwaysSecureHome: GoapGoal = {
+  name: 'SecureHome',
+  satisfied: (s) => !s.enemyNearOurDoor,
+  insistence: (s) => (s.enemyNearOurDoor ? 100 : 0),
+};
+const buildUp: GoapGoal = {
+  name: 'BuildUp',
+  satisfied: (s) => s.weHoldRuins && s.wellArmed,
+  // Wait and strengthen first. Once armed (or clearly ahead) it drops below
+  // cautiousCastle, so an even game still moves on instead of stalling forever.
+  insistence: (s) => (s.forceRatioBucket === 'ahead' ? 0 : s.weHoldRuins && s.wellArmed ? 20 : 70),
+};
+const cautiousCastle: GoapGoal = {
+  name: 'WinByCastle',
+  satisfied: (s) => s.weAreInEnemyCastle && !s.enemyDefendersPresent,
+  insistence: (s) => (s.forceRatioBucket === 'ahead' ? 80 : 30),
+};
+
+export const PERSONALITIES: Record<Personality, PersonalityPlan> = {
+  strategist: { goals: GOALS, actions: ACTIONS, idle: null, pull: 1, ruinsFarmers: 3, weights: {} },
+  berserker: {
+    goals: [onlyIfLosing, destroyArmy, crushCastle],
+    actions: [lastStand, leaveCastle, huntArmy, stormCastle, mopUpCastle],
+    idle: 'hunt',
+    pull: 1.3,
+    ruinsFarmers: 0,
+    weights: {
+      'threat.perDamagePoint': 1.8,
+      'threat.killValueFraction': 1.8,
+      'focus.woundedEnemyMax': 1.5,
+      'castle.huntPerCell': 2,
+      'threat.hangingScale': 0.6,
+      'spacing.meleeCloseBonus': 2,
+    },
+  },
+  conqueror: {
+    goals: [onlyIfLosing, seizeCastle],
+    actions: [lastStand, leaveCastle, assaultCastle, rushCastle, mopUpCastle],
+    idle: null,
+    pull: 1.3,
+    ruinsFarmers: 1,
+    weights: {
+      'castle.approachPerCell': 2.5,
+      'castle.captureDefended': 2,
+      'economy.ruinsApproachPerCell': 0,
+      'economy.ruinsControlBonus': 0,
+      'threat.hangingScale': 0.8,
+    },
+  },
+  survivor: {
+    goals: [alwaysSecureHome, buildUp, cautiousCastle],
+    actions: [guardHome, leaveCastle, captureRuins, armUp, holdBridge, advanceToEnemyCastle, assaultCastle, mopUpCastle],
+    idle: 'arm-up',
+    pull: 0.8,
+    ruinsFarmers: 3,
+    weights: {
+      'threat.hangingScale': 1.6,
+      'threat.perDamagePointTaken': 1.6,
+      'castle.raidThreatPerCell': 1.8,
+      'castle.approachPerCell': 0.6,
+      'cohesion.isolatedPenalty': 2,
+      'retreat.lowHpScale': 2,
+    },
+  },
+};
+
+export function isPersonality(v: unknown): v is Personality {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(PERSONALITIES, v);
 }
 
 // ── Role assignment ─────────────────────────────────────────────────────

@@ -47,7 +47,7 @@ describe('search generator matches the real rules', () => {
   it('a crossbow only fires pierce lines (cost 2), never an archer-style knight-offset shot', () => {
     const state = makeState(
       [
-        makeUnit({ id: 1, player: 2 as Player, type: 'crossbow', row: 5, col: 5, damage: 5, maxMoves: 2 }),
+        makeUnit({ id: 1, player: 2 as Player, type: 'crossbow', row: 5, col: 5, damage: 5, maxMoves: 2, facing: 'down' }),
         makeUnit({ id: 2, player: 1 as Player, type: 'knight', row: 7, col: 5, hp: 3, armor: 0 }), // 2 down: on a line
         makeUnit({ id: 3, player: 1 as Player, type: 'knight', row: 6, col: 7, hp: 3, armor: 0 }), // knight offset: no line
       ],
@@ -64,7 +64,7 @@ describe('search generator matches the real rules', () => {
   it('a crossbow skips a line that would hit its own unit', () => {
     const state = makeState(
       [
-        makeUnit({ id: 1, player: 2 as Player, type: 'crossbow', row: 5, col: 5, damage: 5, maxMoves: 2 }),
+        makeUnit({ id: 1, player: 2 as Player, type: 'crossbow', row: 5, col: 5, damage: 5, maxMoves: 2, facing: 'down' }),
         makeUnit({ id: 4, player: 2 as Player, type: 'knight', row: 6, col: 5 }),
         makeUnit({ id: 2, player: 1 as Player, type: 'knight', row: 7, col: 5 }),
       ],
@@ -78,7 +78,7 @@ describe('search generator matches the real rules', () => {
   it('a pierce shot damages every unit on the line in the simulation', () => {
     const state = makeState(
       [
-        makeUnit({ id: 1, player: 2 as Player, type: 'crossbow', row: 5, col: 5, damage: 5, maxMoves: 2 }),
+        makeUnit({ id: 1, player: 2 as Player, type: 'crossbow', row: 5, col: 5, damage: 5, maxMoves: 2, facing: 'down' }),
         makeUnit({ id: 2, player: 1 as Player, type: 'knight', row: 6, col: 5, hp: 3, armor: 0 }),
         makeUnit({ id: 3, player: 1 as Player, type: 'knight', row: 7, col: 5, hp: 3, armor: 0 }),
       ],
@@ -116,8 +116,8 @@ describe('search simulation — towers, rivers, mage energy', () => {
     setTowers([{ row: 5, col: 5 }]);
     const state = makeState(
       [
-        makeUnit({ id: 1, player: 2 as Player, type: 'archer', row: 5, col: 5, damage: 3, maxMoves: 3 }),
-        makeUnit({ id: 2, player: 1 as Player, type: 'knight', row: 8, col: 5, hp: 3, armor: 0 }),
+        makeUnit({ id: 1, player: 2 as Player, type: 'archer', row: 5, col: 5, damage: 3, maxMoves: 3, facing: 'down' }),
+        makeUnit({ id: 2, player: 1 as Player, type: 'knight', row: 8, col: 5, hp: 3, armor: 0, facing: 'up' }), // faces the archer: plain hit
       ],
       3,
     );

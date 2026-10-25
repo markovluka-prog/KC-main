@@ -11,3 +11,9 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .beads/
+packages/game-rules/scripts/impossibility/perft
+packages/game-rules/scripts/run_full_search.log
+packages/game-rules/scripts/run_to_win.log
+packages/game-rules/scripts/branch_*.txt
+packages/game-rules/scripts/branch_*.json
+packages/game-rules/scripts/.ladder-log/

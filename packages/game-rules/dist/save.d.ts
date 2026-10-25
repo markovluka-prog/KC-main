@@ -1,3 +1,4 @@
+import type { Facing } from './types.js';
 import type { Backpack, BridgeDurability, Construction, DroppedBackpack, HiddenPickup, EquippedGear, GameMode, GearSlot, Player, RuinsArea, TowerPosition, UnitTypeKey } from './types.js';
 /**
  * Plain JSON-serialisable snapshot of an in-progress match.
@@ -104,6 +105,8 @@ export interface SerializedUnit {
      * MAGE dies (not the warded unit, and not a partial absorb).
      */
     wardedBy?: number | null;
+    /** Which way the unit looks (facing.ts). Absent in pre-facing saves. */
+    facing?: Facing;
 }
 export interface SerializedStoryTask {
     ci: number;

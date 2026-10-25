@@ -16,6 +16,7 @@
  * not the real limiter.
  */
 import { type ServerAction } from './apply.js';
+import { type AIWeights } from './evaluate.js';
 import type { GameState } from './state.js';
 import type { Player } from './types.js';
 /** Safety cap on plan length. 3 activations × up to 3 move points is the
@@ -41,6 +42,8 @@ export interface BeamSearchOptions {
     noiseChance?: number;
     noiseTopK?: number;
     rngSeed?: number;
+    /** Evaluation weights for MY plans (a personality's tilt); default base. */
+    weights?: AIWeights;
 }
 /**
  * Canonical key for a `GameState`, used to deduplicate plans that reach the
@@ -72,6 +75,12 @@ export declare function stateKey(state: GameState): string;
  * kill, because nothing here prices in the opponent's next turn.
  */
 export declare function planTurn(root: GameState, me: Player, options: BeamSearchOptions): ServerAction[];
+/**
+ * The `count` best distinct plans the beam found at ANY depth (deduplicated by
+ * resulting position, best-first) — the candidate list for searches that
+ * re-rank plans by something deeper than the static evaluation.
+ */
+export declare function candidatePlans(root: GameState, me: Player, options: BeamSearchOptions, count: number): Plan[];
 export interface ReplySearchOptions extends BeamSearchOptions {
     /**
      * How many of THIS beam's top-scoring finalists get a full opponent-reply

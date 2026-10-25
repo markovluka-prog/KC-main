@@ -40,14 +40,14 @@ import {
   WEAPONS,
   emptyBackpack,
 } from './constants.ts';
+import { applyFacingDamage, facingOf, facingToward, turnCost } from './facing.ts';
 import { type Rng, weightedChoiceWith } from './rng.ts';
 import { TOWER_DAMAGE_FACTOR } from './combat.ts';
 import { insideBoard } from './board.ts';
-import { boardFromState, toUnitState } from './board-state.ts';
 import {
   ALL8_DIRS,
-  generateLegalMoves,
   CATAPULT_MIN_RANGE,
+  CAVALRY_RIVER_JUMP_COST,
   CROSSBOW_PIERCE_COST,
   CROSSBOW_PIERCE_RANGE,
   archerRadiusFor,
@@ -257,37 +257,65 @@ export function createInitialState(opts: CreateInitialStateOpts): GameState {
   };
 }
 
+/**
+ * Copy-on-write discipline (this is the reducer's hottest path — every action
+ * clones the state, and a search clones it millions of times per second):
+ * only what the reducers MUTATE IN PLACE is copied. That is each unit object
+ * and its backpack (parts are incremented in place), the droppedBackpacks
+ * array (pushed to), and the two buff counters. Everything else — terrain,
+ * towers, ruins, constructions, hiddenPickups, bridgeDurability, gear objects,
+ * ward lists, dropped packs themselves — is only ever REPLACED wholesale by
+ * the reducers, so the new state can safely share it with the old one.
+ */
 function cloneUnit(u: SerializedUnit): SerializedUnit {
-  return {
-    ...u,
-    weapon: u.weapon ? { ...u.weapon } : null,
-    armorGear: u.armorGear ? { ...u.armorGear } : null,
-    backpack: { ...u.backpack },
-    warding: u.warding ? [...u.warding] : undefined,
-  };
+  return { ...u, backpack: { ...u.backpack } };
 }
 
 function cloneState(state: GameState): GameState {
   return {
     ...state,
-    towers: state.towers.map((t) => ({ ...t })),
-    ruins: { ...state.ruins },
-    ruins2: state.ruins2 ? { ...state.ruins2 } : undefined,
-    terrain: state.terrain.map((t) => ({ ...t })),
     shieldTurns: { ...state.shieldTurns },
     damageBuff: { ...state.damageBuff },
-    pendingWeaponEquip: state.pendingWeaponEquip ? { ...state.pendingWeaponEquip } : null,
-    droppedBackpacks: (state.droppedBackpacks ?? []).map((d) => ({
-      ...d,
-      parts: { ...d.parts },
-      weapon: d.weapon ? { ...d.weapon } : null,
-      armorGear: d.armorGear ? { ...d.armorGear } : null,
-    })),
-    constructions: (state.constructions ?? []).map((c) => ({ ...c })),
-    bridgeDurability: { ...(state.bridgeDurability ?? {}) },
-    hiddenPickups: (state.hiddenPickups ?? []).map((p) => ({ ...p })),
-    units: state.units.map(cloneUnit),
+    droppedBackpacks: (state.droppedBackpacks ?? []).slice(),
+    constructions: state.constructions ?? [],
+    bridgeDurability: state.bridgeDurability ?? {},
+    hiddenPickups: state.hiddenPickups ?? [],
+    // Units are shared too and copied on first write — see own().
+    units: state.units.slice(),
   };
+}
+
+// Ownership bookkeeping for own(): the units already copied for the state
+// currently being built. Reducers are synchronous and build one `next` at a
+// time, so a tiny module-level list beats a WeakMap by a wide margin; if
+// another state ever interleaves, the list just resets and a unit may be
+// copied twice — wasteful, never wrong.
+let ownedFor: GameState | null = null;
+const owned: SerializedUnit[] = [];
+
+/**
+ * Copy-on-write for units: return a copy of `u` that belongs to `next` (making
+ * it, and swapping it into next.units, on the first call). Every reducer must
+ * go through this before mutating a unit of `next`, since cloneState shares
+ * unit objects with the previous state.
+ */
+function own(next: GameState, u: SerializedUnit): SerializedUnit {
+  if (ownedFor !== next) {
+    ownedFor = next;
+    owned.length = 0;
+  } else if (owned.includes(u)) {
+    return u;
+  }
+  const i = next.units.indexOf(u);
+  const c = cloneUnit(u);
+  owned.push(c);
+  if (i >= 0) next.units[i] = c;
+  return c;
+}
+
+/** own() for an optional unit. */
+function ownOpt(next: GameState, u: SerializedUnit | null | undefined): SerializedUnit | null {
+  return u ? own(next, u) : null;
 }
 
 /** Mark a unit as activated for the turn, enforcing the per-turn cap. Returns a
@@ -432,7 +460,7 @@ function findUnit(state: GameState, id: number): SerializedUnit | null {
  */
 function clearWardsCastBy(next: GameState, deadMageId: number): void {
   for (const u of next.units) {
-    if (u.wardedBy === deadMageId) u.wardedBy = null;
+    if (u.wardedBy === deadMageId) own(next, u).wardedBy = null;
   }
 }
 
@@ -458,7 +486,7 @@ function absorbWithWard(
   events: GameEvent[],
 ): boolean {
   if (!target.wardedBy) return false;
-  const mage = next.units.find((u) => u.id === target.wardedBy && u.hp > 0 && u.type === 'mage');
+  const mage = ownOpt(next, next.units.find((u) => u.id === target.wardedBy && u.hp > 0 && u.type === 'mage'));
   if (!mage) {
     // Warding mage is gone (died some other way) — the flag is stale, clear
     // it and let the hit through normally.
@@ -573,7 +601,7 @@ function applyMove(
   a: ServerAction & { kind: 'move' },
 ): Result<GameState, ValidationError> {
   const next = cloneState(state);
-  const u = findUnit(next, a.unitId);
+  const u = ownOpt(next, findUnit(next, a.unitId));
   if (!u) return err('unit-not-found', `unit ${a.unitId} not alive`);
   if (u.player !== next.currentPlayer) return err('wrong-turn', "not this player's turn");
   if (u.done) return err('unit-cannot-act', 'unit already finished');
@@ -601,13 +629,14 @@ function applyMove(
   // The authoritative check: the move must be one the shared generator would
   // offer this unit right now (straight lines, per-type reach, exact cost).
   // Without it a client could claim any destination at any cost.
-  const legal = generateLegalMoves(boardFromState(next), toUnitState(u)).some(
-    (m) => m.row === a.row && m.col === a.col && m.cost === a.cost,
-  );
-  if (!legal) return err('illegal-move', 'not a legal move for this unit');
+  if (!isLegalMoveShape(next, u, a.row, a.col, a.cost)) {
+    return err('illegal-move', 'not a legal move for this unit');
+  }
 
   const actErr = activateUnit(next, u);
   if (actErr) return { ok: false, error: actErr };
+  // A step leaves the unit facing the way it walked.
+  u.facing = facingToward(u.row, u.col, a.row, a.col, facingOf(u));
   u.row = a.row;
   u.col = a.col;
   u.movesLeft -= a.cost;
@@ -621,6 +650,46 @@ function applyMove(
   return ok(next, moveEvents);
 }
 
+/** Same cell test as boardFromState().isFree, without building a board. */
+function cellFree(s: GameState, row: number, col: number): boolean {
+  if (!insideBoard(row, col)) return false;
+  for (const o of s.units) if (o.hp > 0 && o.row === row && o.col === col) return false;
+  for (const t of s.terrain) {
+    if (t.row === row && t.col === col && (t.type === 'river' || t.type === 'mountain' || t.type === 'rock')) return false;
+  }
+  for (const c of s.constructions) if (c.row === row && c.col === col) return false;
+  return true;
+}
+
+/**
+ * Exactly the moves generateLegalMoves offers (moves.ts), checked directly —
+ * the reducer runs this on every move, so it must not build a whole board.
+ * Straight orthogonal line; 1 cell = 1 move; only the archer may go more than
+ * one cell at once (every cell on the way free); a cavalry may leap exactly
+ * one river cell for CAVALRY_RIVER_JUMP_COST onto a free non-river cell.
+ */
+function isLegalMoveShape(s: GameState, u: SerializedUnit, row: number, col: number, cost: number): boolean {
+  if (u.movesLeft <= 0 || cost > u.movesLeft) return false;
+  const dr = row - u.row;
+  const dc = col - u.col;
+  if ((dr !== 0 && dc !== 0) || (dr === 0 && dc === 0)) return false;
+  const steps = Math.abs(dr) + Math.abs(dc);
+  const sr = Math.sign(dr);
+  const sc = Math.sign(dc);
+  const isRiver = (r: number, c: number) => s.terrain.some((t) => t.row === r && t.col === c && t.type === 'river');
+  // Stepping into the back half costs +1 to turn round (facing.ts).
+  const turn = turnCost(u, u.row + sr, u.col + sc);
+  if (u.type === 'cavalry' && steps === 2 && cost === CAVALRY_RIVER_JUMP_COST + turn && isRiver(u.row + sr, u.col + sc)) {
+    return !isRiver(row, col) && cellFree(s, row, col);
+  }
+  if (cost !== steps + turn) return false;
+  if (steps > 1 && (u.type !== 'archer' || steps > u.maxMoves)) return false;
+  for (let k = 1; k <= steps; k += 1) {
+    if (!cellFree(s, u.row + sr * k, u.col + sc * k)) return false;
+  }
+  return true;
+}
+
 /**
  * Claim the hidden pickup buried under a unit that just arrived, if any.
  * Weapon parts go straight into the finder's own backpack. Gear is equipped
@@ -630,8 +699,21 @@ function applyMove(
  * drop/pickup model stays uniform). Removes the pickup either way: nothing
  * respawns. Mutates `next`.
  */
+const PICKUP_CELLS = new WeakMap<object, Set<number>>();
+function pickupCells(list: readonly { row: number; col: number }[]): Set<number> {
+  let set = PICKUP_CELLS.get(list);
+  if (!set) {
+    set = new Set(list.map((p) => p.row * 100 + p.col));
+    PICKUP_CELLS.set(list, set);
+  }
+  return set;
+}
+
 function claimHiddenPickup(next: GameState, unit: SerializedUnit, events: GameEvent[]): void {
   if (!next.hiddenPickups || next.hiddenPickups.length === 0) return;
+  // O(1) "anything buried here?" — every move asks, and a search makes
+  // ~100k moves a turn; the list is shared by reference until a claim.
+  if (!pickupCells(next.hiddenPickups).has(unit.row * 100 + unit.col)) return;
   const idx = next.hiddenPickups.findIndex((p) => p.row === unit.row && p.col === unit.col);
   if (idx < 0) return;
   const found = next.hiddenPickups[idx]!;
@@ -744,9 +826,11 @@ function applyCatapultBridgeShot(
 
   const attackerOnTower = isOnTower(next, attacker.row, attacker.col);
   const manhattan = Math.abs(a.targetRow - attacker.row) + Math.abs(a.targetCol - attacker.col);
-  if (manhattan < CATAPULT_MIN_RANGE || manhattan > catapultMaxRangeFor(attackerOnTower) || a.cost !== 1) {
+  const bridgeTurn = turnCost(attacker, a.targetRow, a.targetCol);
+  if (manhattan < CATAPULT_MIN_RANGE || manhattan > catapultMaxRangeFor(attackerOnTower) || a.cost !== 1 + bridgeTurn) {
     return err('illegal-attack', 'catapult target out of range');
   }
+  if (bridgeTurn > 0) attacker.facing = facingToward(attacker.row, attacker.col, a.targetRow, a.targetCol, facingOf(attacker));
 
   const actErr = activateUnit(next, attacker);
   if (actErr) return { ok: false, error: actErr };
@@ -786,7 +870,8 @@ function applyPierceAttack(
   a: ServerAction & { kind: 'attack' },
 ): Result<GameState, ValidationError> {
   if (attacker.type !== 'crossbow') return err('illegal-attack', 'only the crossbow can fire a pierce shot');
-  if (a.cost !== CROSSBOW_PIERCE_COST) return err('illegal-attack', 'pierce shot has a fixed cost');
+  const pierceTurn = turnCost(attacker, a.targetRow, a.targetCol);
+  if (a.cost !== CROSSBOW_PIERCE_COST + pierceTurn) return err('illegal-attack', 'pierce shot has a fixed cost');
 
   const dr = Math.sign(a.targetRow - attacker.row);
   const dc = Math.sign(a.targetCol - attacker.col);
@@ -818,9 +903,11 @@ function applyPierceAttack(
   // match a real unit's row/col, so an off-board line entry simply never
   // hits anything below — it can't be used to smuggle in a phantom target.
   const hits = line
-    .map((cell) => next.units.find((u) => u.row === cell.row && u.col === cell.col && u.hp > 0))
+    .map((cell) => ownOpt(next, next.units.find((u) => u.row === cell.row && u.col === cell.col && u.hp > 0)))
     .filter((u): u is SerializedUnit => !!u);
   if (hits.length === 0) return err('no-target', 'no living unit on the pierce line');
+  // Allies on the line are collateral; there must be an enemy to shoot at.
+  if (!hits.some((u) => u.player !== attacker.player)) return err('no-target', 'no enemy on the pierce line');
 
   const actErr = activateUnit(next, attacker);
   if (actErr) return { ok: false, error: actErr };
@@ -836,7 +923,7 @@ function applyPierceAttack(
     // may have already killed a LATER target in `hits` (if that target was
     // itself the mage). Skip anything already dead.
     if (target.hp <= 0) continue;
-    let hitDamage = damage;
+    let hitDamage = applyFacingDamage(damage, target, attacker.row, attacker.col);
     if (hitDamage === 0 && attacker.damage > 0) hitDamage = 1;
 
     // Ward check first: a shielded target takes 0 damage from this hit
@@ -874,6 +961,7 @@ function applyPierceAttack(
 
   attacker.movesLeft -= a.cost;
   if (attacker.movesLeft <= 0) attacker.done = true;
+  if (pierceTurn > 0) attacker.facing = facingToward(attacker.row, attacker.col, a.targetRow, a.targetCol, facingOf(attacker));
 
   return ok(next, events);
 }
@@ -883,7 +971,7 @@ function applyAttack(
   a: ServerAction & { kind: 'attack' },
 ): Result<GameState, ValidationError> {
   const next = cloneState(state);
-  const attacker = findUnit(next, a.unitId);
+  const attacker = ownOpt(next, findUnit(next, a.unitId));
   if (!attacker) return err('unit-not-found', `attacker ${a.unitId} not alive`);
   if (attacker.player !== next.currentPlayer) return err('wrong-turn', "not this player's turn");
   if (attacker.done) return err('unit-cannot-act', 'unit already finished');
@@ -891,7 +979,7 @@ function applyAttack(
 
   if (a.mode === 'pierce') return applyPierceAttack(next, attacker, a);
 
-  const target = next.units.find((u) => u.row === a.targetRow && u.col === a.targetCol && u.hp > 0);
+  const target = ownOpt(next, next.units.find((u) => u.row === a.targetRow && u.col === a.targetCol && u.hp > 0));
   if (!target) {
     // A catapult may fire at an empty bridge cell to shatter it (1 hit point
     // per hit) instead of requiring a living target — same range/cost rule
@@ -906,6 +994,8 @@ function applyAttack(
   // A ranged unit shooting from a mage tower gets ~1.5× range (high ground)
   // in exchange for weaker shots.
   const attackerOnTower = isOnTower(next, attacker.row, attacker.col);
+  // Striking into the attacker's own back half costs +1 to turn (facing.ts).
+  const turn = turnCost(attacker, a.targetRow, a.targetCol);
 
   // Catapult: target must be at manhattan distance 3–6 (3–9 from a tower), cost = 1.
   if (attacker.type === 'catapult') {
@@ -913,7 +1003,7 @@ function applyAttack(
     if (
       manhattan < CATAPULT_MIN_RANGE ||
       manhattan > catapultMaxRangeFor(attackerOnTower) ||
-      a.cost !== 1
+      a.cost !== 1 + turn
     ) {
       return err('illegal-attack', 'catapult target out of range');
     }
@@ -933,9 +1023,17 @@ function applyAttack(
     if (
       chebyshev < 1 ||
       chebyshev > archerRadiusFor(attackerOnTower) ||
-      a.cost !== chebyshev
+      a.cost !== chebyshev + turn
     ) {
       return err('illegal-attack', 'archer/crossbow shot out of square range');
+    }
+  }
+
+  // Melee strikes have a fixed price too (knight/samurai 1, cavalry 2), plus
+  // the turn — without this a client could strike behind for the front price.
+  if (attacker.type === 'knight' || attacker.type === 'samurai' || attacker.type === 'cavalry') {
+    if (a.cost !== (attacker.type === 'cavalry' ? 2 : 1) + turn) {
+      return err('illegal-attack', 'wrong cost for this strike');
     }
   }
 
@@ -969,6 +1067,13 @@ function applyAttack(
     damage = Math.max(1, Math.round(damage * TOWER_DAMAGE_FACTOR));
   }
   if (next.damageBuff[attacker.player] > 0) damage += 2;
+  // From the target's back ×2, side ×1.25 — measured from where the attacker
+  // strikes (after a cavalry jump: its landing cell), as the client does.
+  damage = applyFacingDamage(damage, target, attacker.row, attacker.col);
+  // A turn (or a jump) leaves the attacker facing its target.
+  if (turn > 0 || a.mode === 'jump' || a.mode === 'l-attack') {
+    attacker.facing = facingToward(attacker.row, attacker.col, target.row, target.col, facingOf(attacker));
+  }
   // Archer/crossbow min-1 rule: ranged units always deal at least 1 damage.
   if (
     (attacker.type === 'archer' || attacker.type === 'crossbow') &&
@@ -1109,6 +1214,11 @@ export function endTurn(state: GameState): GameState {
   const next = cloneState(state);
   const ending = next.currentPlayer;
   const upcoming = ending === 1 ? 2 : 1;
+  // Every unit's activation flag resets, so every unit gets its own copy.
+  next.units = next.units.map(cloneUnit);
+  ownedFor = next;
+  owned.length = 0;
+  owned.push(...next.units);
   next.units.forEach((u) => {
     // Activation resets for everyone; moves/done refill for the upcoming player.
     u.activated = false;
@@ -1173,7 +1283,7 @@ function applyCraft(
     return err('craft-unaffordable', 'missing parts');
   }
   const next = cloneState(state);
-  const nextU = next.units.find((x) => x.id === unitId)!;
+  const nextU = own(next, next.units.find((x) => x.id === unitId)!);
   const actErr = activateUnit(next, nextU);
   if (actErr) return { ok: false, error: actErr };
   for (const [part, n] of Object.entries(weapon.recipe)) {
@@ -1220,7 +1330,7 @@ function applyCraftArmor(
     return err('craft-unaffordable', 'missing parts');
   }
   const next = cloneState(state);
-  const nextU = next.units.find((x) => x.id === unitId)!;
+  const nextU = own(next, next.units.find((x) => x.id === unitId)!);
   const actErr = activateUnit(next, nextU);
   if (actErr) return { ok: false, error: actErr };
   for (const [part, n] of Object.entries(armor.recipe)) {
@@ -1265,7 +1375,7 @@ function applyEquipWeapon(state: GameState, unitId: number): Result<GameState, V
     return err('cannot-equip', 'unit cannot equip this item');
   }
   const next = cloneState(state);
-  const target = next.units.find((x) => x.id === unitId)!;
+  const target = own(next, next.units.find((x) => x.id === unitId)!);
   equipGearToUnit(target, pending);
   next.pendingWeaponEquip = null;
   return ok(next, [
@@ -1333,8 +1443,8 @@ function applyTransferItems(
   }
 
   const next = cloneState(state);
-  const nextFrom = next.units.find((u) => u.id === from.id)!;
-  const nextTo = next.units.find((u) => u.id === to.id)!;
+  const nextFrom = own(next, next.units.find((u) => u.id === from.id)!);
+  const nextTo = own(next, next.units.find((u) => u.id === to.id)!);
 
   for (const [part, n] of Object.entries(parts)) {
     if (!n) continue;
@@ -1377,7 +1487,7 @@ function applySearchRuins(
     return err('unit-not-on-ruins', 'unit must be standing on ruins');
   }
   const next = cloneState(state);
-  const acted = next.units.find((x) => x.id === unitId)!;
+  const acted = own(next, next.units.find((x) => x.id === unitId)!);
   const actErr = activateUnit(next, acted);
   if (actErr) return { ok: false, error: actErr };
   const loot = pickLoot(rng);
@@ -1418,7 +1528,7 @@ function applyCastleHeal(state: GameState, unitId: number): Result<GameState, Va
     return err('unit-not-in-castle', 'unit must stand in its own castle to heal');
   }
   const next = cloneState(state);
-  const acted = next.units.find((x) => x.id === unitId)!;
+  const acted = own(next, next.units.find((x) => x.id === unitId)!);
   const actErr = activateUnit(next, acted);
   if (actErr) return { ok: false, error: actErr };
   acted.hp = acted.maxHp;
@@ -1448,6 +1558,18 @@ function isValidationError(x: SerializedUnit | ValidationError): x is Validation
   return 'code' in x;
 }
 
+/** A 1-move ability aimed at (row, col) — mage abilities, a catapult rock:
+ *  +TURN_COST when that cell is in the unit's back half (it turns to face it). See facing.ts. */
+function mageMoveCost(mage: SerializedUnit, row: number, col: number): number {
+  return 1 + turnCost(mage, row, col);
+}
+
+function spendMageMove(mage: SerializedUnit, row: number, col: number): void {
+  const turn = turnCost(mage, row, col);
+  mage.movesLeft -= 1 + turn;
+  if (turn > 0) mage.facing = facingToward(mage.row, mage.col, row, col, facingOf(mage));
+}
+
 /**
  * Mage attack: the player picks how much damage to deal (>=1) to one enemy
  * at any Chebyshev distance, no line-of-sight check. Costs 1 move plus
@@ -1472,21 +1594,23 @@ function applyMageAttack(
     return err('illegal-attack', 'damage must be a positive integer');
   }
 
+  if (mage.movesLeft < mageMoveCost(mage, a.targetRow, a.targetCol)) return err('no-moves-left', 'turning round costs a move');
   const chebyshev = Math.max(Math.abs(a.targetRow - mage.row), Math.abs(a.targetCol - mage.col));
   const cost = chosenDamage * MAGE_ATTACK_ENERGY_PER_HP + chebyshev * MAGE_ATTACK_ENERGY_PER_CELL;
   if ((mage.energy ?? 0) < cost) return err('no-energy', 'not enough energy for this attack');
 
   const next = cloneState(state);
-  const nextMage = next.units.find((x) => x.id === mage.id)!;
-  const nextTarget = next.units.find((x) => x.id === target.id)!;
+  const nextMage = own(next, next.units.find((x) => x.id === mage.id)!);
+  const nextTarget = own(next, next.units.find((x) => x.id === target.id)!);
   const actErr = activateUnit(next, nextMage);
   if (actErr) return { ok: false, error: actErr };
 
   let damage = chosenDamage;
   if (next.damageBuff[nextMage.player] > 0) damage += 2;
+  damage = applyFacingDamage(damage, nextTarget, nextMage.row, nextMage.col);
 
   nextMage.energy = (nextMage.energy ?? 0) - cost;
-  nextMage.movesLeft -= 1;
+  spendMageMove(nextMage, a.targetRow, a.targetCol);
   if (nextMage.movesLeft <= 0) nextMage.done = true;
 
   const events: GameEvent[] = [];
@@ -1549,14 +1673,14 @@ function applyMageWard(
   if (toggled.length === 0) return err('no-warding-target', 'no living ally to toggle');
 
   const next = cloneState(state);
-  const nextMage = next.units.find((x) => x.id === mage.id)!;
+  const nextMage = own(next, next.units.find((x) => x.id === mage.id)!);
   const actErr = activateUnit(next, nextMage);
   if (actErr) return { ok: false, error: actErr };
 
   const added: number[] = [];
   const removed: number[] = [];
   for (const id of toggled) {
-    const u = next.units.find((x) => x.id === id && x.hp > 0);
+    const u = ownOpt(next, next.units.find((x) => x.id === id && x.hp > 0));
     if (!u) continue;
     if (u.wardedBy === nextMage.id) {
       u.wardedBy = null;
@@ -1601,14 +1725,15 @@ function applyMageDrain(
   if (target.id === mage.id) return err('illegal-attack', 'cannot drain yourself');
   const chebyshev = Math.max(Math.abs(target.row - mage.row), Math.abs(target.col - mage.col));
   if (chebyshev > 1) return err('not-adjacent', 'drain target must stand adjacent');
+  if (mage.movesLeft < mageMoveCost(mage, target.row, target.col)) return err('no-moves-left', 'turning round costs a move');
   if (target.wardedBy && target.wardedBy !== mage.id) {
     return err('illegal-attack', 'target is warded by another mage');
   }
   if (target.hp <= 1) return err('illegal-attack', 'cannot drain a target down to 0 hp');
 
   const next = cloneState(state);
-  const nextMage = next.units.find((x) => x.id === mage.id)!;
-  const nextTarget = next.units.find((x) => x.id === target.id)!;
+  const nextMage = own(next, next.units.find((x) => x.id === mage.id)!);
+  const nextTarget = own(next, next.units.find((x) => x.id === target.id)!);
   const actErr = activateUnit(next, nextMage);
   if (actErr) return { ok: false, error: actErr };
 
@@ -1621,7 +1746,7 @@ function applyMageDrain(
     // absorbWithWard may have just killed nextMage itself (self-warded target,
     // overdrawn) — only spend its move if it's still alive to spend it.
     if (nextMage.hp > 0) {
-      nextMage.movesLeft -= 1;
+      spendMageMove(nextMage, target.row, target.col);
       if (nextMage.movesLeft <= 0) nextMage.done = true;
     }
     return ok(next, events);
@@ -1630,7 +1755,7 @@ function applyMageDrain(
   nextTarget.hp -= 1;
   const maxEnergy = nextMage.maxEnergy ?? MAGE_MAX_ENERGY;
   nextMage.energy = Math.min(maxEnergy, (nextMage.energy ?? 0) + MAGE_DRAIN_ENERGY_PER_HP);
-  nextMage.movesLeft -= 1;
+  spendMageMove(nextMage, target.row, target.col);
   if (nextMage.movesLeft <= 0) nextMage.done = true;
 
   events.push({
@@ -1661,12 +1786,13 @@ function applyMageBurnBridge(
     return err('cell-occupied', 'a unit is standing on the bridge');
   }
 
+  if (mage.movesLeft < mageMoveCost(mage, a.row, a.col)) return err('no-moves-left', 'turning round costs a move');
   const chebyshev = Math.max(Math.abs(a.row - mage.row), Math.abs(a.col - mage.col));
   const cost = chebyshev * MAGE_BURN_BRIDGE_ENERGY_PER_CELL;
   if ((mage.energy ?? 0) < cost) return err('no-energy', 'not enough energy to burn this bridge');
 
   const next = cloneState(state);
-  const nextMage = next.units.find((x) => x.id === mage.id)!;
+  const nextMage = own(next, next.units.find((x) => x.id === mage.id)!);
   const actErr = activateUnit(next, nextMage);
   if (actErr) return { ok: false, error: actErr };
 
@@ -1680,7 +1806,7 @@ function applyMageBurnBridge(
   sinkLootAt(next, a.row, a.col);
 
   nextMage.energy = (nextMage.energy ?? 0) - cost;
-  nextMage.movesLeft -= 1;
+  spendMageMove(nextMage, a.row, a.col);
   if (nextMage.movesLeft <= 0) nextMage.done = true;
 
   return ok(next, [{ kind: 'bridge-burned', data: { row: a.row, col: a.col, by: nextMage.id, cost } }]);
@@ -1715,8 +1841,8 @@ function applyMageHeal(
   if ((mage.energy ?? 0) < cost) return err('no-energy', 'not enough energy for this heal');
 
   const next = cloneState(state);
-  const nextMage = next.units.find((x) => x.id === mage.id)!;
-  const nextTarget = next.units.find((x) => x.id === target.id)!;
+  const nextMage = own(next, next.units.find((x) => x.id === mage.id)!);
+  const nextTarget = own(next, next.units.find((x) => x.id === target.id)!);
   const actErr = activateUnit(next, nextMage);
   if (actErr) return { ok: false, error: actErr };
 
@@ -1803,7 +1929,7 @@ function applyBuild(
   }
 
   const next = cloneState(state);
-  const nextU = next.units.find((x) => x.id === unitId)!;
+  const nextU = own(next, next.units.find((x) => x.id === unitId)!);
   // The building knight still uses one of the turn's activations, same as the
   // client (selecting a unit activates it) — otherwise building would be a
   // way around MAX_ACTIVATIONS_PER_TURN.
@@ -1888,7 +2014,7 @@ function applyThrowRock(
   if (u.player !== state.currentPlayer) return err('wrong-turn', "not this player's turn");
   if (u.type !== 'catapult') return err('unit-cannot-act', 'only a catapult can throw a rock');
   if (u.done) return err('unit-cannot-act', 'unit already finished');
-  if (u.movesLeft < 1) return err('no-moves-left', 'throwing a rock costs a move');
+  if (u.movesLeft < 1 + turnCost(u, a.row, a.col)) return err('no-moves-left', 'throwing a rock costs a move (+1 to turn round)');
   const dist = Math.abs(a.row - u.row) + Math.abs(a.col - u.col);
   if (dist < CATAPULT_MIN_RANGE || dist > catapultMaxRangeFor(isOnTower(state, u.row, u.col))) {
     return err('illegal-attack', 'rock target out of range');
@@ -1896,7 +2022,7 @@ function applyThrowRock(
   if (!rockTargetAllowed(state, a.row, a.col)) return err('not-empty-cell', 'cannot drop a rock there');
 
   const next = cloneState(state);
-  const nextU = next.units.find((x) => x.id === u.id)!;
+  const nextU = own(next, next.units.find((x) => x.id === u.id)!);
   const actErr = activateUnit(next, nextU);
   if (actErr) return { ok: false, error: actErr };
 
@@ -1904,7 +2030,7 @@ function applyThrowRock(
   next.terrain = hadRock
     ? next.terrain.filter((t) => !(t.row === a.row && t.col === a.col && t.type === 'rock'))
     : [...next.terrain, { row: a.row, col: a.col, type: 'rock' }];
-  nextU.movesLeft -= 1;
+  spendMageMove(nextU, a.row, a.col); // 1 move, +1 and a turn when aimed behind
   if (nextU.movesLeft <= 0) nextU.done = true;
   return ok(next, [{ kind: hadRock ? 'rock-shattered' : 'rock-thrown', data: { unitId: u.id, row: a.row, col: a.col } }]);
 }

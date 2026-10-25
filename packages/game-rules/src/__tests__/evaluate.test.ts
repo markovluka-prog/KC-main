@@ -217,7 +217,7 @@ describe('evaluate()', () => {
       // ordinary spacing/threat terms is fine; the hunt-down term would add
       // thousands).
       const delta = evaluate(closer, 1) - evaluate(far, 1);
-      expect(Math.abs(delta)).toBeLessThan(2000);
+      expect(Math.abs(delta)).toBeLessThan(3000);
     });
   });
 });

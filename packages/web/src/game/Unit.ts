@@ -1,6 +1,9 @@
 import {
   MAGE_ENERGY_REGEN_PER_TURN,
   MAGE_MAX_ENERGY,
+  MAGE_START_ENERGY,
+  defaultFacingForRow,
+  type Facing,
   UNIT_TYPES,
   emptyBackpack,
   type Backpack,
@@ -58,6 +61,10 @@ export class Unit implements UnitState {
    * Game.absorbWithWard in main.ts).
    */
   wardedBy: number | null = null;
+  /** Which way the unit looks, in live board rows (facing.ts). */
+  facing: Facing;
+  /** Enemies this unit has slain — the 3–4 player kill leaderboard. */
+  kills = 0;
 
   done = false;
   activated = false;
@@ -102,7 +109,12 @@ export class Unit implements UnitState {
     this.movesLeft = t.moves;
     this.backpack = emptyBackpack();
     this.maxEnergy = type === 'mage' ? MAGE_MAX_ENERGY : 0;
-    this.energy = this.maxEnergy;
+    // Same as setup.ts: player 2 regenerates +5 before its first turn.
+    // Everyone after player 1 regenerates +5 before their first turn (setup.ts).
+    this.energy = type === 'mage' ? MAGE_START_ENERGY - (player !== 1 ? MAGE_ENERGY_REGEN_PER_TURN : 0) : 0;
+    // Look toward the other half of the board (facing.ts); the board places
+    // units already flipped for the viewer, so this is right either way.
+    this.facing = defaultFacingForRow(row);
 
     this.visualRow = row;
     this.visualCol = col;

@@ -37,6 +37,8 @@ export interface HarnessUnit {
   wardedBy?: number | null;
   /** Mage only: energy for absorbing warded hits. */
   energy?: number;
+  /** Which way it looks (facing.ts); absent = the player's default. */
+  facing?: 'up' | 'down' | 'left' | 'right';
 }
 
 export interface HarnessState {

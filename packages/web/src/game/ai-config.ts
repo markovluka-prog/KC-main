@@ -172,7 +172,12 @@ export const AI_DIFFICULTY: Record<AIDifficulty, AIConfig> = {
   // economy lightly.
   easy: {
     label: 'Слабый',
-    frameWait: 20,
+    // Plans through the measured beam ladder (game-rules beam-presets.ts),
+    // same engine as every other level — see BEAM_DIFFICULTY.
+    useBeamSearch: 'easy',
+    // ~0.13 s between actions on every level: pacing, not thinking, was
+    // most of a turn's wall time (thinking runs on the worker pool).
+    frameWait: 8,
     combinationLimit: 20,
     randomMoveChance: 0,
     mistakeChance: 0,
@@ -217,7 +222,10 @@ export const AI_DIFFICULTY: Record<AIDifficulty, AIConfig> = {
   // beatable with good play.
   medium: {
     label: 'Средний',
-    frameWait: 12,
+    // Plans through the measured beam ladder (game-rules beam-presets.ts),
+    // same engine as every other level — see BEAM_DIFFICULTY.
+    useBeamSearch: 'medium',
+    frameWait: 8,
     combinationLimit: 100,
     randomMoveChance: 0,
     mistakeChance: 0,
@@ -262,7 +270,7 @@ export const AI_DIFFICULTY: Record<AIDifficulty, AIConfig> = {
   hard: {
     label: 'Сложный',
     useBeamSearch: 'hard',
-    frameWait: 10,
+    frameWait: 8,
     combinationLimit: 200,
     randomMoveChance: 0,
     mistakeChance: 0,
@@ -338,7 +346,7 @@ export const AI_DIFFICULTY: Record<AIDifficulty, AIConfig> = {
     // it at 'hard' here would silently waste every dial turned up below: the
     // beam search would decide the turn before intelligence-scaled MCTS ever ran.
     useBeamSearch: 'impossible',
-    frameWait: 10,
+    frameWait: 8,
     combinationLimit: 200,
     randomMoveChance: 0,
     mistakeChance: 0,

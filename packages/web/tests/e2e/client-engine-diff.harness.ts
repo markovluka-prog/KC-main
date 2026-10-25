@@ -12,6 +12,8 @@
  * methods, play it on the ENGINE via applyAction, and diff the results.
  */
 import {
+  flipFacing,
+  turnCost,
   applyAction,
   createInitialState,
   emptyBackpack,
@@ -77,6 +79,8 @@ export function toState(g: Game): GameState {
     armorGear: u.armorGear ? { name: u.armorGear.name, icon: u.armorGear.icon, amount: u.armorGear.amount } : null,
     backpack: { ...u.backpack },
     wardedBy: u.wardedBy ?? null,
+    // Facing is in live rows like everything else: up/down swap on a flipped board.
+    facing: g.player1Bottom ? flipFacing(u.facing) : u.facing,
     ...(u.type === 'mage' ? { energy: u.energy, maxEnergy: u.maxEnergy, warding: [...(u.warding ?? [])] } : {}),
   }));
   const s = createInitialState({
@@ -143,6 +147,7 @@ function view(s: GameState): Record<string, unknown> {
         activated: !!u.activated,
         energy: u.type === 'mage' ? u.energy : undefined,
         wardedBy: u.wardedBy ?? null,
+        facing: u.facing,
         backpack: parts(u.backpack),
         weapon: u.weapon?.name ?? null,
         armorGear: u.armorGear?.name ?? null,
@@ -201,6 +206,8 @@ export function setupBrawl(g: Game, seed: number): void {
     u.backpack['Рубин'] = Math.floor(rng.next() * 2);
     u.backpack['Амулет'] = Math.floor(rng.next() * 2);
     if (u.type === 'mage') u.energy = Math.floor(rng.next() * (MAGE_MAX_ENERGY + 1));
+    // Random facings, so front/side/back hits and turn costs all get played.
+    u.facing = (['up', 'down', 'left', 'right'] as const)[Math.floor(rng.next() * 4)];
   }
   for (const u of g.board.units) {
     const mage = g.board.units.find((m: any) => m.type === 'mage' && m.player === u.player);
@@ -239,7 +246,8 @@ function candidates(g: Game, s: GameState, rng: { next(): number }): ServerActio
       const col = Math.floor(rng.next() * 20);
       const dist = Math.abs(row - cat.row) + Math.abs(col - cat.col);
       const onTower = s.towers.some((t) => t.row === cat.row && t.col === cat.col);
-      if (dist >= CATAPULT_MIN_RANGE && dist <= catapultMaxRangeFor(onTower) && rockTargetAllowed(s, row, col)) {
+      const affordable = cat.movesLeft >= 1 + turnCost(cat, row, col); // turning to aim behind costs +1
+      if (affordable && dist >= CATAPULT_MIN_RANGE && dist <= catapultMaxRangeFor(onTower) && rockTargetAllowed(s, row, col)) {
         out.push({ kind: 'throw-rock', unitId: cat.id, row, col });
         break;
       }

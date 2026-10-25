@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTIONS,
   GOALS,
+  PERSONALITIES,
   assignRoles,
   planStep,
   selectGoal,
@@ -256,5 +257,39 @@ describe('assignRoles — per-type role assignment', () => {
     expect(result.bridgeSquad.has(1)).toBe(true);
     expect(result.farmers.has(3)).toBe(true);
     expect(result.bridgeSquad.has(2)).toBe(false); // catapult stays a skirmisher
+  });
+});
+
+describe('personalities — each plans its own way to win', () => {
+  const stageOf = (p: keyof typeof PERSONALITIES, over: Partial<WorldState>) => {
+    const { goals, actions, idle } = PERSONALITIES[p];
+    const s = baseState(over);
+    return planStep(selectGoal(s, goals), s, actions).step?.name ?? idle;
+  };
+
+  it('strategist is the original plan', () => {
+    expect(PERSONALITIES.strategist.goals).toBe(GOALS);
+    expect(PERSONALITIES.strategist.actions).toBe(ACTIONS);
+  });
+
+  it('berserker hunts the army, then storms the castle once it is broken', () => {
+    expect(stageOf('berserker', { sallyDone: true })).toBe('hunt');
+    expect(stageOf('berserker', { sallyDone: true, enemyArmyBroken: true })).toBe('assault');
+    expect(stageOf('berserker', { sallyDone: true, enemyNearOurDoor: true, forceRatioBucket: 'even' })).toBe('hunt');
+    expect(stageOf('berserker', { enemyNearOurDoor: true, forceRatioBucket: 'behind' })).toBe('defend');
+  });
+
+  it('conqueror skips the ruins and goes for the castle', () => {
+    expect(stageOf('conqueror', { sallyDone: true, enemyDefendersPresent: true, enemyCastleEmpty: false })).toBe('march');
+    expect(stageOf('conqueror', { sallyDone: true })).toBe('assault');
+    expect(stageOf('conqueror', { sallyDone: true, weAreInEnemyCastle: true, enemyDefendersPresent: true })).toBe('mop-up');
+  });
+
+  it('survivor always guards home, arms up, attacks once armed or ahead', () => {
+    expect(stageOf('survivor', { sallyDone: true, enemyNearOurDoor: true, forceRatioBucket: 'ahead' })).toBe('defend');
+    expect(stageOf('survivor', { sallyDone: true })).toBe('take-ruins');
+    expect(stageOf('survivor', { sallyDone: true, weHoldRuins: true })).toBe('arm-up');
+    const armed = stageOf('survivor', { sallyDone: true, weHoldRuins: true, wellArmed: true });
+    expect(['hold-bridge', 'march', 'assault']).toContain(armed);
   });
 });

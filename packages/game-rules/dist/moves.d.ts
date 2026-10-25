@@ -24,6 +24,11 @@ export declare function archerRadiusFor(onTower: boolean): number;
 /** Catapult max bombardment range, extended ~1.5× on a tower. Min range is unchanged. */
 export declare function catapultMaxRangeFor(onTower: boolean): number;
 export declare function generateLegalMoves(board: BoardLike, unit: UnitState): MoveAction[];
+/**
+ * Every attack `unit` can make now. Striking into its own back half costs
+ * TURN_COST extra on top of the attack's own cost (facing.ts) — added here
+ * once for every unit type, so the per-type generators below stay as is.
+ */
 export declare function generateAttackActions(board: BoardLike, unit: UnitState): AttackAction[];
 export declare function generateAllActions(board: BoardLike, unit: UnitState): Action[];
 //# sourceMappingURL=moves.d.ts.map

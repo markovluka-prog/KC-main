@@ -24,6 +24,9 @@ function makeUnit(
     maxMoves: t.moves,
     movesLeft: movesLeft ?? t.moves,
     name: t.name,
+    // Every fixture here aims "up" (targets at row 4 from row 5), so face that
+    // way: the facing rules (turn cost) are tested in their own block below.
+    facing: 'up',
   };
 }
 
@@ -58,7 +61,8 @@ describe('generateLegalMoves', () => {
       const dr = Math.abs(m.row - 5);
       const dc = Math.abs(m.col - 5);
       expect(dr + dc).toBe(1);
-      expect(m.cost).toBe(1);
+      // Facing up: stepping down (its back) costs +1 to turn round.
+      expect(m.cost).toBe(m.row === 6 ? 2 : 1);
     }
   });
 
@@ -214,7 +218,10 @@ describe('crossbow pierce shot', () => {
       makeUnit(9, 2, 'knight', 7, 7), // SE
     ];
     const attacks = generateAttackActions(makeBoard([unit, ...enemies]), unit);
-    expect(attacks).toHaveLength(8);
+    // Facing up with 2 moves: the 3 southern lines are behind it and would
+    // cost 2 + 1 to turn — unaffordable, so 5 of the 8 are offered.
+    expect(attacks).toHaveLength(5);
+    expect(attacks.every((a) => a.targetRow <= 5)).toBe(true);
   });
 
   it('does not offer a shot with no unit anywhere on the line', () => {
@@ -223,10 +230,17 @@ describe('crossbow pierce shot', () => {
     expect(generateAttackActions(board, unit)).toEqual([]);
   });
 
-  it('offers the shot even when the only unit on the line is an ally', () => {
+  it('does NOT offer a shot when the only unit on the line is an ally', () => {
     const unit = makeUnit(1, 1, 'crossbow', 5, 5);
     const ally = makeUnit(2, 1, 'knight', 5, 7);
-    const attacks = generateAttackActions(makeBoard([unit, ally]), unit);
+    expect(generateAttackActions(makeBoard([unit, ally]), unit)).toHaveLength(0);
+  });
+
+  it('still offers it (hitting the ally too) once an enemy shares the line', () => {
+    const unit = makeUnit(1, 1, 'crossbow', 5, 5);
+    const ally = makeUnit(2, 1, 'knight', 5, 6);
+    const enemy = makeUnit(3, 2, 'knight', 5, 7);
+    const attacks = generateAttackActions(makeBoard([unit, ally, enemy]), unit);
     expect(attacks).toHaveLength(1);
     expect(attacks[0]!.mode).toBe('pierce');
   });
@@ -354,5 +368,25 @@ describe('cavalry river leap', () => {
     const knight = { ...horse(), type: 'knight' as const, maxMoves: 2, movesLeft: 2 };
     const moves = generateLegalMoves(mkBoard([[6, 5]]), knight);
     expect(moves.some((m) => m.row === 7 && m.col === 5)).toBe(false);
+  });
+});
+
+describe('facing — turning round costs a move', () => {
+  it('a step into the back half costs +1 and side steps are free', () => {
+    const k = { ...makeUnit(1, 1, 'knight', 5, 5), facing: 'right' as const };
+    const moves = generateLegalMoves(makeBoard([k]), k);
+    const cost = (r: number, c: number) => moves.find((m) => m.row === r && m.col === c)?.cost;
+    expect(cost(5, 6)).toBe(1); // front
+    expect(cost(4, 5)).toBe(1); // side
+    expect(cost(6, 5)).toBe(1); // side
+    expect(cost(5, 4)).toBe(2); // back: turn + step
+  });
+
+  it('a unit with no move to spare cannot strike behind itself', () => {
+    const k = { ...makeUnit(1, 1, 'knight', 5, 5, 1), facing: 'up' as const };
+    const behind = makeUnit(2, 2, 'knight', 6, 5);
+    const ahead = makeUnit(3, 2, 'knight', 4, 5);
+    expect(generateAttackActions(makeBoard([k, behind]), k)).toHaveLength(0);
+    expect(generateAttackActions(makeBoard([k, ahead]), k).map((a) => a.cost)).toEqual([1]);
   });
 });

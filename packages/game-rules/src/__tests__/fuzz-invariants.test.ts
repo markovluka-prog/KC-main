@@ -1,3 +1,4 @@
+import { turnCost } from '../facing.js';
 import { describe, expect, it } from 'vitest';
 import { applyAction, createInitialState, endTurn, rockTargetAllowed, type ServerAction } from '../apply.js';
 import { CATAPULT_MIN_RANGE, catapultMaxRangeFor } from '../moves.js';
@@ -20,6 +21,16 @@ import type { UnitTypeKey } from '../types.js';
  * lying in a river, stats out of range, more than 3 activations.
  */
 const MAX_ARMOR_GEAR = Math.max(...ARMORS.map((a) => a.amount));
+
+/** Deep-freeze a state so any reducer that writes into it (instead of into
+ *  its own copy — the reducer shares untouched objects copy-on-write) throws. */
+function deepFreeze<T>(o: T): T {
+  if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+    Object.freeze(o);
+    for (const v of Object.values(o as object)) deepFreeze(v);
+  }
+  return o;
+}
 
 function checkInvariants(s: GameState, where: string): void {
   const cells = new Set<string>();
@@ -97,7 +108,7 @@ describe('reducer fuzz — generator/validator agreement and state invariants', 
           const acts = generateActionsForPlayer(s, s.currentPlayer);
           if (acts.length === 0) break;
           const a: ServerAction = acts[Math.floor(pick.next() * acts.length)]!;
-          const res = applyAction(s, a, mulberry32(seed + steps));
+          const res = applyAction(deepFreeze(s), a, mulberry32(seed + steps));
           if (!res.ok) {
             throw new Error(`seed ${seed} turn ${turn}: generator offered ${JSON.stringify(a)} but applyAction said ${res.error.code}: ${res.error.message}`);
           }
@@ -110,7 +121,7 @@ describe('reducer fuzz — generator/validator agreement and state invariants', 
           expect(lootTotal(s), `seed ${seed}: parts duplicated by ${a.kind}`).toBeLessThanOrEqual(partsAtStart);
           if (s.winner !== null) break;
         }
-        s = endTurn(s);
+        s = endTurn(deepFreeze(s));
         checkInvariants(s, `seed ${seed} turn ${turn} after end-turn`);
       }
     }
@@ -196,6 +207,7 @@ describe('reducer fuzz — crowded melee', () => {
               const dist = Math.abs(row - cat.row) + Math.abs(col - cat.col);
               const onTower = s.towers.some((t) => t.row === cat.row && t.col === cat.col);
               const legal =
+                cat.movesLeft >= 1 + turnCost(cat, row, col) && // aiming behind: +1 to turn round
                 dist >= CATAPULT_MIN_RANGE && dist <= catapultMaxRangeFor(onTower) && rockTargetAllowed(s, row, col);
               const res = applyAction(s, { kind: 'throw-rock', unitId: cat.id, row, col }, mulberry32(1));
               expect(res.ok, `brawl ${seed}: throw-rock to ${row},${col} legal=${legal}`).toBe(legal);
@@ -228,7 +240,7 @@ describe('reducer fuzz — crowded melee', () => {
           const fights = acts.filter((a) => a.kind !== 'move');
           const pool = fights.length > 0 && pick.next() < 0.7 ? fights : acts;
           const a: ServerAction = pool[Math.floor(pick.next() * pool.length)]!;
-          const res = applyAction(s, a, mulberry32(seed + steps));
+          const res = applyAction(deepFreeze(s), a, mulberry32(seed + steps));
           if (!res.ok) {
             throw new Error(`brawl ${seed} turn ${turn}: generator offered ${JSON.stringify(a)} but applyAction said ${res.error.code}: ${res.error.message}`);
           }
@@ -240,7 +252,7 @@ describe('reducer fuzz — crowded melee', () => {
           expect(lootTotal(s), `brawl ${seed}: parts duplicated by ${a.kind}`).toBeLessThanOrEqual(partsAtStart);
           if (s.winner !== null) break;
         }
-        s = endTurn(s);
+        s = endTurn(deepFreeze(s));
         checkInvariants(s, `brawl ${seed} turn ${turn} after end-turn`);
       }
     }
@@ -249,4 +261,36 @@ describe('reducer fuzz — crowded melee', () => {
       expect(seen.get(mode) ?? 0, `fuzz never exercised ${mode}`).toBeGreaterThan(0);
     }
   }, 300_000);
+});
+
+describe('applyMove accepts exactly the generator\'s moves', () => {
+  it('no extra and no missing moves, every unit type, river leaps included', () => {
+    let checked = 0;
+    for (let seed = 1; seed <= 40; seed += 1) {
+      const s = brawl(seed);
+      for (const player of [1, 2] as const) {
+        const st = { ...s, currentPlayer: player };
+        const legal = new Set(
+          generateActionsForPlayer(st, player)
+            .filter((a) => a.kind === 'move')
+            .map((a) => (a.kind === 'move' ? `${a.unitId}:${a.row},${a.col}:${a.cost}` : '')),
+        );
+        for (const u of st.units.filter((x) => x.player === player)) {
+          for (let dr = -4; dr <= 4; dr += 1) {
+            for (let dc = -4; dc <= 4; dc += 1) {
+              for (let cost = 1; cost <= 3; cost += 1) {
+                const a = { kind: 'move' as const, unitId: u.id, row: u.row + dr, col: u.col + dc, cost };
+                const ok = applyAction(st, a, mulberry32(1)).ok;
+                expect(ok, `${u.type} ${u.id}@${u.row},${u.col} → ${a.row},${a.col} cost ${cost}`).toBe(
+                  legal.has(`${u.id}:${a.row},${a.col}:${cost}`),
+                );
+                checked += 1;
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(50_000);
+  });
 });

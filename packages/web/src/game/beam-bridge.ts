@@ -21,10 +21,8 @@
 
 import {
   createInitialState,
-  planTurn,
-  planTurnWithReply,
-  toBeamOptions,
-  toReplyOptions,
+  planTurnFor,
+  flipFacing,
   ROWS,
   getCastleP1Col,
   getCastleP2Col,
@@ -33,6 +31,7 @@ import {
   getConstructions,
   getTerrain,
   getTowers,
+  type AIWeights,
   type BeamDifficultyConfig,
   type GameState,
   type Player,
@@ -78,6 +77,8 @@ function toSerializedUnit(u: Unit, player1Bottom: boolean): SerializedUnit {
     // takes 0, its mage pays or dies) — without them the search planned
     // "kills" on shielded units that the real game then absorbed.
     wardedBy: u.wardedBy ?? null,
+    // Facing is in live rows too: flip up/down with the board.
+    facing: player1Bottom ? flipFacing(u.facing) : u.facing,
     ...(u.type === 'mage'
       ? { energy: u.energy, maxEnergy: u.maxEnergy, warding: [...(u.warding ?? [])] }
       : {}),
@@ -197,6 +198,20 @@ export function toPlanEntry(
       return { unitId: action.unitId, action: { type: 'draw', score: 0 } };
     case 'castle-heal':
       return { unitId: action.unitId, action: { type: 'castle-heal', score: 0 } };
+    // Mage abilities and building have no AIAction of their own: they go to the
+    // live game as the engine action itself (AIGameAPI.performEngineAction).
+    // Before this they were dropped, so the AI never used its mage or built a
+    // bridge even though its search planned on doing so.
+    case 'mage-attack':
+      return { unitId: action.unitId, action: { type: 'engine', score: 0, server: { ...action, targetRow: flip(action.targetRow) } } };
+    case 'mage-burn-bridge':
+    case 'build-tower':
+    case 'build-bridge':
+      return { unitId: action.unitId, action: { type: 'engine', score: 0, server: { ...action, row: flip(action.row) } } };
+    case 'mage-ward':
+    case 'mage-drain':
+    case 'mage-heal':
+      return { unitId: action.unitId, action: { type: 'engine', score: 0, server: action } };
     // 'end-turn' / 'resign' / 'draw-artifact' / 'equip-weapon' are not
     // produced by candidateActions/generateActionsForUnit today (no
     // catapult rock-throw action exists either) — nothing to map.
@@ -214,11 +229,12 @@ export function beamPlanFor(
   game: AIGameAPI,
   me: Player,
   config: BeamDifficultyConfig,
+  weights?: AIWeights,
 ): Array<{ unitId: number; action: AIAction }> {
   const state = snapshotGameState(game);
-  const actions = config.reply
-    ? planTurnWithReply(state, me, toReplyOptions(config))
-    : planTurn(state, me, toBeamOptions(config));
+  // Same entry point as scripts/ladder.mjs, so the difficulty measured there
+  // is exactly the one shipped here.
+  const actions = planTurnFor(state, me, config, state.turnNumber + 1, weights);
 
   const plan: Array<{ unitId: number; action: AIAction }> = [];
   for (const a of actions) {

@@ -5,7 +5,8 @@
 // online match. Pure + DOM-free. Mirrors the client's Board.initUnits +
 // randomizeMapPositions, but seeded so both peers agree.
 import { mulberry32 } from './rng.ts';
-import { COLS, MAGE_MAX_ENERGY, ROWS, START_POSITIONS_P1, UNIT_TYPES, emptyBackpack } from './constants.ts';
+import { defaultFacingForRow } from './facing.ts';
+import { COLS, MAGE_ENERGY_REGEN_PER_TURN, MAGE_MAX_ENERGY, MAGE_START_ENERGY, ROWS, START_POSITIONS_P1, UNIT_TYPES, emptyBackpack } from './constants.ts';
 import { scatterHiddenPickups } from './pickups.ts';
 import type {
   HiddenPickup,
@@ -62,10 +63,14 @@ function buildUnit(
     armorGear: null,
     backpack: emptyBackpack(),
     wardedBy: null,
+    facing: defaultFacingForRow(row),
   };
   if (pos.type === 'mage') {
     unit.maxEnergy = MAGE_MAX_ENERGY;
-    unit.energy = MAGE_MAX_ENERGY;
+    // Energy regenerates at the start of a mage's OWN turn, so player 2's mage
+    // gains +5 before it ever acts while player 1's doesn't. Starting it 5
+    // lower gives both exactly MAGE_START_ENERGY on their first turn.
+    unit.energy = MAGE_START_ENERGY - (unit.player === 2 ? MAGE_ENERGY_REGEN_PER_TURN : 0);
     unit.warding = [];
   }
   return unit;

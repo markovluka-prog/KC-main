@@ -38,6 +38,15 @@ export const SAVE_VERSION = 4;
  * actions). Regenerates +5 at the start of the mage's own turn.
  */
 export const MAGE_MAX_ENERGY = 20;
+/**
+ * Energy a mage STARTS the match with (two turns of regen), not the full 20.
+ * At 20, the side moving first opens by sniping the other mage across the
+ * whole board (2 damage + 15 cells = 17 energy) before it can ward itself —
+ * measured: the first mover then won or led every game between equal bots,
+ * whichever bot it was. At 10 the reach is 8 cells, short of the castles'
+ * distance; after a turn or two both mages are back to full on equal terms.
+ */
+export const MAGE_START_ENERGY = 10; // on each side's FIRST turn — see setup.ts
 export const MAGE_ENERGY_REGEN_PER_TURN = 5;
 /**
  * Mage attack: the player picks how much damage to deal (>=1) — no longer a

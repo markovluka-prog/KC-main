@@ -1,0 +1,50 @@
+{
+  "wrap_enabled": true,
+  "wrap_permission": "allow",
+  "path": {
+    "max_lines": 120,
+    "head_frac": 0.5,
+    "salient_cap": 30,
+    "collapse": true
+  },
+  "tl": 0,
+  "paths": {},
+  "tls": {},
+  "tuner": {
+    "enabled": true,
+    "c": 0.7,
+    "recovery_penalty": 0.15,
+    "fail_trunc_penalty": 0.05,
+    "miss_penalty": 0.5,
+    "min_raw_chars": 2000,
+    "explore_prob": 0.35,
+    "warmup": 8
+  },
+  "scorer": {
+    "enabled": true,
+    "min_pos": 20,
+    "threshold_mult": 1.5,
+    "train_budget_s": 4.0
+  },
+  "haiku": {
+    "enabled": false,
+    "backend": "claude_cli",
+    "cmd": "",
+    "model": "claude-haiku-5-5",
+    "digest_min_chars": 32000,
+    "max_input_chars": 120000,
+    "max_output_tokens": 300,
+    "session_calls": 10,
+    "session_token_budget": 300000,
+    "teacher_prob": 0.3,
+    "digest_timeout": 45,
+    "teacher_timeout": 20
+  },
+  "ctx": {
+    "enabled": true,
+    "window": 200000,
+    "soft_frac": 0.5,
+    "warn_turns": 3,
+    "cooldown_turns": 10
+  }
+}

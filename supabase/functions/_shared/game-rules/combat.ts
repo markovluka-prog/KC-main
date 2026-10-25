@@ -1,5 +1,6 @@
 // AUTO-VENDORED from packages/game-rules/src/combat.ts — DO NOT EDIT BY HAND.
 // Edit the source and re-run scripts/vendor-game-rules.sh.
+import { applyFacingDamage } from './facing.ts';
 import type { CombatContext, UnitState, UnitTypeKey } from './types.ts';
 
 /**
@@ -36,6 +37,10 @@ export function attackDamage(attacker: UnitState, target: UnitState, ctx: Combat
   if (ctx.shieldTurns[target.player] > 0) {
     damage = Math.max(0, damage - 2);
   }
+
+  // From the target's back ×2, side ×1.25 (facing.ts), measured from where
+  // the attacker strikes.
+  damage = applyFacingDamage(damage, target, attacker.row, attacker.col);
 
   // Archers always deliver at least 1 damage if their base damage > 0
   // (arrows pierce armor).

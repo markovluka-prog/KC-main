@@ -73,7 +73,7 @@ describe('server-smoke: pure import + deterministic replay', () => {
         kind: 'attack',
         unitId: 1,
         mode: 'shot',
-        cost: 2,
+        cost: 1, // a knight strike costs 1 (the reducer now checks melee cost)
         targetRow: 5,
         targetCol: 8,
         landingRow: 5,

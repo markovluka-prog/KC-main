@@ -1,3 +1,4 @@
+import { defaultFacingForRow, isFacing } from './facing.js';
 import { ARMORS, BUILD_WORK_TOTAL, BRIDGE_MAX_DURABILITY, COLS, DEFAULT_RUINS, DEFAULT_TOWERS, MAGE_MAX_ENERGY, PARTS, SAVE_VERSION, UNIT_TYPES, emptyBackpack, } from './constants.js';
 import { insideBoard } from './board.js';
 /**
@@ -152,6 +153,8 @@ export function validateSerializedUnit(raw) {
     // wardedBy: any unit type can be on the receiving end of a mage's shield.
     const wardedByRaw = toFiniteInt(r.wardedBy, 0);
     unit.wardedBy = wardedByRaw > 0 ? wardedByRaw : null;
+    // Pre-facing saves: look toward the other half of the board from where it stands.
+    unit.facing = isFacing(r.facing) ? r.facing : defaultFacingForRow(row);
     return unit;
 }
 function validatePendingWeaponEquip(raw) {
