@@ -517,8 +517,10 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         // the mage runs dry (full credit from 5 energy; nothing at 0).
         if (u.wardedBy) {
             const we = LIVE_MAGES.get(u.wardedBy);
+            // A mage shielding itself counts double: it is the unit every other ward
+            // depends on (its death clears them all), so it covers itself first.
             if (we !== undefined)
-                out[FI_material_wardCover] += sign * Math.min(1, we / 5);
+                out[FI_material_wardCover] += sign * Math.min(1, we / 5) * (u.id === u.wardedBy ? 2 : 1);
         }
     }
     // Towers and tower sites are neutral, so without this a half-built tower is
