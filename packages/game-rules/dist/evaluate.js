@@ -466,14 +466,20 @@ function growPairBuffers(n) {
     OPP_TOWER = new Uint8Array(n);
     OPP_VAL = new Float64Array(n);
 }
+/** Share of a ward-absorbed hit still counted as threat (it drains the mage). */
+const WARD_THREAT_SHARE = 0.35;
 function afterArmor(state, raw, t) {
     // A ward absorbs the whole hit, paid 1:1 from the warding mage's energy. If
     // that energy is short the unit is still spared but the MAGE dies
     // (apply.ts absorbWithWard), so count the hit as landing.
     if (t.wardedBy) {
         const e = LIVE_MAGES.get(t.wardedBy);
+        // The ward is not free: every absorbed point burns a point of the mage's
+        // energy, which runs out (and then the mage dies). So a warded unit is
+        // spared from the hit but still counts part of it as a threat — the bot
+        // keeps out of fire instead of treating a ward as a licence to stand in it.
         if (e !== undefined && e >= raw)
-            return 0;
+            return Math.min(raw * WARD_THREAT_SHARE, Math.max(0, raw - t.armor));
     }
     let dmg = Math.max(0, raw - t.armor);
     if (state.shieldTurns[t.player] > 0)
@@ -669,10 +675,12 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         const toMe = castlePathField(state, me);
         let myAdvance = 0;
         let oppAdvance = 0;
+        // A mage counts double: the closer it stands to the fight, the less energy
+        // its attacks/heals burn on distance, leaving more for wards.
         for (const u of myUnits)
-            myAdvance += 28 - (toOpp[u.row * COLS + u.col] + 2);
+            myAdvance += (28 - (toOpp[u.row * COLS + u.col] + 2)) * (u.type === 'mage' ? 2 : 1);
         for (const u of oppUnits)
-            oppAdvance += 28 - (toMe[u.row * COLS + u.col] + 2);
+            oppAdvance += (28 - (toMe[u.row * COLS + u.col] + 2)) * (u.type === 'mage' ? 2 : 1);
         out[FI_castle_approachPerCell] = (myAdvance - 0.4 * oppAdvance) * CASTLE_APPROACH_MULTIPLIER;
     }
     // ── GOAL 5: Spacing — ranged keep distance, melee close in ───────────────

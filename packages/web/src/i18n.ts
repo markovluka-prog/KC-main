@@ -506,6 +506,8 @@ const EN: Record<string, string> = {
   'Нет моста в пределах энергии.': 'No bridge within your energy.',
   'Нет раненых союзников в пределах энергии.': 'No wounded allies within your energy.',
   'Никнейм': 'Nickname',
+  'На первом ходу маг не может атаковать.': 'A mage cannot attack on its first turn.',
+  'На первом ходу маг не может поджигать мост.': 'A mage cannot burn a bridge on its first turn.',
   'Тема игры': 'Theme',
   'Тёмная': 'Dark',
   'Светлая': 'Light',

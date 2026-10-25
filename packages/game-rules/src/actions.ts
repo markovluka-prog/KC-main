@@ -28,6 +28,7 @@ import {
   ARMORS,
   BUILD_COST_PER_TURN,
   MAGE_ATTACK_ENERGY_PER_CELL,
+  MAGE_PASSIVE_TURNS,
   MAGE_ATTACK_ENERGY_PER_HP,
   MAGE_BURN_BRIDGE_ENERGY_PER_CELL,
   MAGE_HEAL_ENERGY_PER_CELL,
@@ -214,8 +215,9 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
       // efficient use of energy for a search), and a minimal 1-damage jab
       // for cheap chip damage/energy conservation, when they differ.
       const distCost = chebyshev * MAGE_ATTACK_ENERGY_PER_CELL;
+      const passive = state.turnNumber <= MAGE_PASSIVE_TURNS; // first turn: no mage attacks
       const maxDamage = Math.floor((energy - distCost) / MAGE_ATTACK_ENERGY_PER_HP);
-      if (maxDamage >= 1) {
+      if (maxDamage >= 1 && !passive) {
         out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: maxDamage });
         if (maxDamage > 1) {
           out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: 1 });
@@ -223,12 +225,14 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
       }
       // mage-drain: only an adjacent enemy above 1 hp, not warded by a
       // DIFFERENT mage (see [[kc-mage-ward-mechanic]]).
-      if (chebyshev <= 1 && other.hp > 1 && (!other.wardedBy || other.wardedBy === mage.id)) {
+      if (!passive && chebyshev <= 1 && other.hp > 1 && (!other.wardedBy || other.wardedBy === mage.id)) {
         out.push({ kind: 'mage-drain', unitId: mage.id, targetUnitId: other.id });
       }
     } else {
-      // mage-drain also works on an adjacent ally (self-service energy top-up).
-      if (chebyshev === 1 && other.hp > 1) {
+      // mage-drain also works on an adjacent ally (self-service energy top-up) —
+      // but never on one this mage has warded: the drain would run through the
+      // ward and be paid for in energy, defeating the point.
+      if (chebyshev === 1 && other.hp > 1 && other.wardedBy !== mage.id) {
         out.push({ kind: 'mage-drain', unitId: mage.id, targetUnitId: other.id });
       }
       // mage-heal: any hurt ally (including itself) within energy range.
@@ -261,7 +265,7 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
   }
 
   // mage-burn-bridge: any bridge the mage can afford to reach.
-  for (const t of state.terrain) {
+  for (const t of state.turnNumber <= MAGE_PASSIVE_TURNS ? [] : state.terrain) {
     if (t.type !== 'bridge') continue;
     if (state.units.some((u) => u.hp > 0 && u.row === t.row && u.col === t.col)) continue; // occupied
     const chebyshev = Math.max(Math.abs(t.row - mage.row), Math.abs(t.col - mage.col));

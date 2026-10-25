@@ -35,7 +35,11 @@ function mkUnit(
 }
 
 function startState(units: SerializedUnit[], seed = 1): GameState {
-  return createInitialState({ mode: 'pvp', seed, units });
+  const s = createInitialState({ mode: 'pvp', seed, units });
+  // Past each side's first turn: mages may not attack/burn on turns 1–2
+  // (MAGE_PASSIVE_TURNS), which these fixtures aren't about.
+  s.turnNumber = 3;
+  return s;
 }
 
 describe('generateActionsForUnit', () => {

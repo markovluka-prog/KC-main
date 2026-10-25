@@ -38,6 +38,13 @@ export declare const MAGE_ENERGY_REGEN_PER_TURN = 5;
  */
 export declare const MAGE_ATTACK_DAMAGE = 5;
 export declare const MAGE_ATTACK_ENERGY_PER_HP = 1;
+/**
+ * Each side's FIRST turn (turn numbers 1..MAGE_PASSIVE_TURNS) a mage may not
+ * attack, drain an enemy or burn a bridge — it can still move, ward, heal and
+ * drain its own units. Mirrored in the client (main.ts mageTargetsFor), the AI
+ * action generator (actions.ts) and the rules text.
+ */
+export declare const MAGE_PASSIVE_TURNS = 2;
 export declare const MAGE_ATTACK_ENERGY_PER_CELL = 1;
 /**
  * Ward: 1-to-1 — absorbing a hit costs the warding mage exactly that many

@@ -62,6 +62,7 @@ import {
   MAGE_ATTACK_DAMAGE,
   MAGE_ATTACK_ENERGY_PER_CELL,
   MAGE_ATTACK_ENERGY_PER_HP,
+  MAGE_PASSIVE_TURNS,
   MAGE_WARD_ENERGY_PER_DAMAGE,
   MAGE_DRAIN_ENERGY_PER_HP,
   MAGE_BURN_BRIDGE_ENERGY_PER_CELL,
@@ -2385,6 +2386,7 @@ const AI_PERSONAS = {
         <li>💚 <strong>Лечение</strong> — восстанавливает HP себе или союзнику на любом расстоянии; цена = HP + расстояние энергии</li>
         <li>🌉 <strong>Поджечь мост</strong> — уничтожает построенный мост на любом расстоянии одним применением; цена = расстояние × 2 энергии; мост, на котором стоит воин, поджечь нельзя</li>
       </ul>
+      <p>⛔ <strong>Первый ход:</strong> на своём самом первом ходу маг <strong>не может атаковать</strong> (ни Атака, ни Высасывание чужого юнита) и <strong>не может поджигать мост</strong>. Двигаться, ставить оберег, лечить и высасывать у своих можно.</p>
       <p>🧙 <strong>Башня Мага</strong> на поле — обычная клетка высоты: даёт бонус к дальности стрелкам (лучник/арбалетчик/катапульта), стоящим на ней, но не связана со способностями мага</p>
 
       <h4>🎁 Закопанная добыча</h4>
@@ -2537,6 +2539,7 @@ const AI_PERSONAS = {
         <li>💚 <strong>Heal</strong> — restores HP to itself or an ally at any range; cost = HP + distance energy</li>
         <li>🌉 <strong>Burn bridge</strong> — destroys a built bridge outright at any range in one shot; cost = distance × 2 energy; a bridge with a warrior standing on it can't be burned</li>
       </ul>
+      <p>⛔ <strong>First turn:</strong> on its side's very first turn the mage <strong>cannot attack</strong> (neither Attack nor Drain on an enemy) and <strong>cannot burn a bridge</strong>. It can still move, ward, heal and drain its own units.</p>
       <p>🧙 The <strong>Mage Tower</strong> on the map is just high ground: it boosts range for ranged units (archer/crossbow/catapult) standing on it, unrelated to the mage's own abilities</p>
 
       <h4>🎁 Buried loot</h4>
@@ -9407,7 +9410,7 @@ const AI_PERSONAS = {
         (enabled ? '' : 'disabled title="' + this.escape(hint) + '"') + '>' + label + '</button>';
 
       html += btn('mage-attack-mode', this.mageMode === 'attack', '🔥 ' + tr('Атака'), canAttack,
-        tr('Нет доступных целей в пределах энергии.'));
+        this.isMagePassiveTurn() ? tr('На первом ходу маг не может атаковать.') : tr('Нет доступных целей в пределах энергии.'));
       html += btn('mage-drain-mode', this.mageMode === 'drain', '🩸 ' + tr('Высасывание'), canDrain,
         tr('Нужна соседняя незащищённая цель (более 1 HP).'));
       html += btn('mage-heal-mode', this.mageMode === 'heal', '💚 ' + tr('Лечение'), canHeal,
@@ -9415,7 +9418,7 @@ const AI_PERSONAS = {
       html += btn('mage-ward-mode', this.mageMode === 'ward', '🛡️ ' + tr('Щит'), canWard,
         tr('Нет живых союзников.'));
       html += btn('mage-burn-bridge-mode', this.mageMode === 'burn-bridge', '🌉🔥 ' + tr('Сжечь мост'), canBurnBridge,
-        tr('Нет моста в пределах энергии.'));
+        this.isMagePassiveTurn() ? tr('На первом ходу маг не может поджигать мост.') : tr('Нет моста в пределах энергии.'));
 
       if (this.mageMode && this.mageMode !== 'ward' && !(this.mageMode === 'attack' && this.pendingMageAttack)) {
         const hints = {
@@ -9530,8 +9533,15 @@ const AI_PERSONAS = {
      * hand since this offline engine mutates Unit objects directly rather
      * than going through applyAction.
      */
+    /** Each side's first turn: no mage attack / enemy drain / bridge burning. */
+    isMagePassiveTurn() {
+      const sides = this.isFfa() ? this.ffaPlayers : 2;
+      return this.turnNumber <= Math.max(MAGE_PASSIVE_TURNS, sides);
+    }
+
     mageTargetsFor(unit, kind) {
       if (!unit || unit.type !== "mage" || unit.movesLeft < 1) return [];
+      if (this.isMagePassiveTurn() && (kind === 'attack' || kind === 'burn-bridge')) return [];
       const energy = unit.energy || 0;
       const out = [];
 
@@ -9546,6 +9556,7 @@ const AI_PERSONAS = {
       } else if (kind === 'drain') {
         this.board.units.forEach((o) => {
           if (!o.alive() || o.id === unit.id) return;
+          if (o.player !== unit.player && this.isMagePassiveTurn()) return; // first turn: only own units
           const dist = Math.max(Math.abs(o.row - unit.row), Math.abs(o.col - unit.col));
           if (dist > 1) return;
           if (o.hp <= 1) return;

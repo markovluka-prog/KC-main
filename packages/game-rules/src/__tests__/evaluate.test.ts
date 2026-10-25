@@ -250,14 +250,14 @@ describe('mages and wards in evaluate()', () => {
       startState([
         mkUnit({ id: 1, player: 1, type: 'knight', row: 10, col: 10, wardedBy: 4 }),
         mkUnit({ id: 4, player: 1, type: 'mage', row: 9, col: 9, energy, maxEnergy: 20 }),
-        mkUnit({ id: 3, player: 2, type: 'knight', row: 10, col: 11 }),
+        mkUnit({ id: 3, player: 2, type: 'knight', row: 10, col: 11, damage: 9 }),
       ]);
     const rich = mk(20);
     const poor = mk(0);
     rich.currentPlayer = 1;
     poor.currentPlayer = 1;
     const i = FEATURES.indexOf('threat.perDamagePointTaken');
-    // 20 energy absorbs the knight's 5; 0 energy can't, so the hit lands (and
+    // 20 energy absorbs the knight's 9; 0 energy can't, so the hit lands (and
     // would kill the mage). perDamagePointTaken is negative: less taken = higher.
     expect(evalFeatures(rich, 1)[i]!).toBeGreaterThan(evalFeatures(poor, 1)[i]!);
   });

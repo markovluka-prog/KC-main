@@ -132,7 +132,7 @@ export type ServerAction = {
     row: number;
     col: number;
 };
-export type ValidationCode = 'wrong-turn' | 'unit-not-found' | 'unit-not-owned' | 'unit-cannot-act' | 'illegal-move' | 'illegal-attack' | 'no-moves-left' | 'no-target' | 'game-over' | 'craft-unaffordable' | 'no-pending-weapon' | 'cannot-equip' | 'weapon-pending' | 'activation-limit' | 'unit-not-on-ruins' | 'unit-not-in-castle' | 'not-adjacent' | 'nothing-to-transfer' | 'not-a-mage' | 'no-energy' | 'no-warding-target' | 'no-heal-target' | 'already-full-hp' | 'no-bridge-here' | 'not-river-cell' | 'not-empty-cell' | 'cell-occupied' | 'already-built' | 'unknown-action';
+export type ValidationCode = 'wrong-turn' | 'unit-not-found' | 'unit-not-owned' | 'unit-cannot-act' | 'illegal-move' | 'illegal-attack' | 'first-turn' | 'no-moves-left' | 'no-target' | 'game-over' | 'craft-unaffordable' | 'no-pending-weapon' | 'cannot-equip' | 'weapon-pending' | 'activation-limit' | 'unit-not-on-ruins' | 'unit-not-in-castle' | 'not-adjacent' | 'nothing-to-transfer' | 'not-a-mage' | 'no-energy' | 'no-warding-target' | 'no-heal-target' | 'already-full-hp' | 'no-bridge-here' | 'not-river-cell' | 'not-empty-cell' | 'cell-occupied' | 'already-built' | 'unknown-action';
 export interface ValidationError {
     code: ValidationCode;
     message: string;

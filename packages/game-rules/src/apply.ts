@@ -30,6 +30,7 @@ import {
   MAGE_HEAL_ENERGY_PER_CELL,
   MAGE_HEAL_ENERGY_PER_HP,
   MAGE_MAX_ENERGY,
+  MAGE_PASSIVE_TURNS,
   MAGE_WARD_ENERGY_PER_DAMAGE,
   PARTS,
   ROWS,
@@ -142,6 +143,7 @@ export type ValidationCode =
   | 'unit-cannot-act'
   | 'illegal-move'
   | 'illegal-attack'
+  | 'first-turn'
   | 'no-moves-left'
   | 'no-target'
   | 'game-over'
@@ -1586,6 +1588,7 @@ function applyMageAttack(
   const target = state.units.find((u) => u.row === a.targetRow && u.col === a.targetCol && u.hp > 0);
   if (!target) return err('no-target', 'no living target at given cell');
   if (target.player === mage.player) return err('illegal-attack', 'cannot attack own unit');
+  if (state.turnNumber <= MAGE_PASSIVE_TURNS) return err('first-turn', 'a mage cannot attack on its first turn');
 
   const chosenDamage = Math.floor(a.damage);
   if (!Number.isFinite(chosenDamage) || chosenDamage < 1) {
@@ -1721,6 +1724,9 @@ function applyMageDrain(
   const target = findUnit(state, a.targetUnitId);
   if (!target) return err('unit-not-found', 'drain target not alive');
   if (target.id === mage.id) return err('illegal-attack', 'cannot drain yourself');
+  if (target.player !== mage.player && state.turnNumber <= MAGE_PASSIVE_TURNS) {
+    return err('first-turn', 'a mage cannot drain an enemy on its first turn');
+  }
   const chebyshev = Math.max(Math.abs(target.row - mage.row), Math.abs(target.col - mage.col));
   if (chebyshev > 1) return err('not-adjacent', 'drain target must stand adjacent');
   if (mage.movesLeft < mageMoveCost(mage, target.row, target.col)) return err('no-moves-left', 'turning round costs a move');
@@ -1778,6 +1784,7 @@ function applyMageBurnBridge(
 
   const isBridge = state.terrain.some((t) => t.row === a.row && t.col === a.col && t.type === 'bridge');
   if (!isBridge) return err('no-bridge-here', 'no bridge at given cell');
+  if (state.turnNumber <= MAGE_PASSIVE_TURNS) return err('first-turn', 'a mage cannot burn a bridge on its first turn');
   // Burning a bridge out from under a unit would leave it standing in the
   // river — same rule as building one: the cell must be empty.
   if (state.units.some((u) => u.hp > 0 && u.row === a.row && u.col === a.col)) {

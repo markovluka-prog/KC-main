@@ -49,7 +49,11 @@ function mkUnit(
 }
 
 function startState(units: SerializedUnit[], seed = 1): GameState {
-  return createInitialState({ mode: 'pvp', seed, units });
+  const s = createInitialState({ mode: 'pvp', seed, units });
+  // Past each side's first turn: mages may not attack/burn on turns 1–2
+  // (MAGE_PASSIVE_TURNS), which these fixtures aren't about.
+  s.turnNumber = 3;
+  return s;
 }
 
 describe('createInitialState', () => {
@@ -478,6 +482,7 @@ describe('applyAction — crossbow pierce shot', () => {
 describe('endTurn / applyAction kind=end-turn', () => {
   it('flips currentPlayer and increments turnNumber', () => {
     const s = startState([]);
+    s.turnNumber = 1;
     const out = endTurn(s);
     expect(out.currentPlayer).toBe(2);
     expect(out.turnNumber).toBe(2);
@@ -1866,5 +1871,34 @@ describe('crossbow never shoots a line of nothing but allies', () => {
     expect(applyAction(s, bolt, mulberry32(1)).ok).toBe(false);
     const withEnemy = startState([...units, mkUnit({ id: 3, player: 2, type: 'knight', row: 5, col: 7, facing: 'left' })]);
     expect(applyAction(withEnemy, bolt, mulberry32(1)).ok).toBe(true);
+  });
+});
+
+describe('mage first turn', () => {
+  // Turns 1 and 2 are each side's first turn: no mage attack, no enemy drain, no bridge burning.
+  const board = (turn: number) => {
+    const s = startState([
+      mkUnit({ id: 1, player: 1, type: 'mage', row: 10, col: 10, energy: 20, maxEnergy: 20 }),
+      mkUnit({ id: 2, player: 2, type: 'knight', row: 10, col: 11 }),
+      mkUnit({ id: 3, player: 1, type: 'knight', row: 10, col: 9 }),
+    ]);
+    s.turnNumber = turn;
+    return s;
+  };
+  const attack: ServerAction = { kind: 'mage-attack', unitId: 1, targetRow: 10, targetCol: 11, damage: 3 };
+
+  it('rejects mage-attack and enemy mage-drain on the first turns', () => {
+    for (const turn of [1, 2]) {
+      const a = applyAction(board(turn), attack);
+      expect(a.ok).toBe(false);
+      if (!a.ok) expect(a.error.code).toBe('first-turn');
+      const d = applyAction(board(turn), { kind: 'mage-drain', unitId: 1, targetUnitId: 2 });
+      expect(d.ok).toBe(false);
+    }
+  });
+
+  it('still allows draining an own unit, and attacking from turn 3', () => {
+    expect(applyAction(board(1), { kind: 'mage-drain', unitId: 1, targetUnitId: 3 }).ok).toBe(true);
+    expect(applyAction(board(3), attack).ok).toBe(true);
   });
 });

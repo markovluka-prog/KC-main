@@ -39,7 +39,7 @@
         "towerStake": 2500,
         "wardCover": 2500,
         "wipeout": 100000,
-        "perEnergy": 0
+        "perEnergy": 250
     },
     "castle": {
         "$comment": "Castle capture is the real win condition; these dwarf material on purpose.",
@@ -62,7 +62,7 @@
         "outnumberedHomeRadius": 8,
         "lowHpThreshold": 0.35,
         "lowHpDistBonusPerCell": 600,
-        "lowHpDistBonusMax": 3000,
+        "lowHpDistBonusMax": 800,
         "lowHpScale": 1
     },
     "spacing": {
