@@ -66,7 +66,7 @@ final class GameViewController: UIViewController, WKNavigationDelegate {
         ])
 
         NotificationCenter.default.addObserver(
-            self, selector: #selector(setAudio(paused:)), name: UIApplication.willResignActiveNotification, object: nil)
+            self, selector: #selector(pauseAudio), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(resumeAudio), name: UIApplication.didBecomeActiveNotification, object: nil)
 
@@ -114,7 +114,7 @@ final class GameViewController: UIViewController, WKNavigationDelegate {
 
     // MARK: - Музыка при сворачивании
 
-    @objc private func setAudio(paused: Bool = true) {
+    @objc private func pauseAudio() {
         webView?.evaluateJavaScript(
             "document.querySelectorAll('audio').forEach(function(m){if(!m.paused){m.dataset.kcPaused='1';m.pause();}});")
     }
