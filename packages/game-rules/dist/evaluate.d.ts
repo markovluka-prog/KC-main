@@ -38,6 +38,7 @@ export interface AIWeights {
         byType: Record<string, number>;
         onTower: number;
         towerStake: number;
+        wardCover: number;
         wipeout: number;
     };
     castle: {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '../apply.js';
+import { generateActionsForUnit } from '../actions.js';
 import { FEATURES, evalFeatures, evaluate, unitValue, W } from '../evaluate.js';
 import type { SerializedUnit } from '../save.js';
 import type { GameState } from '../state.js';
@@ -273,5 +274,29 @@ describe('mages and wards in evaluate()', () => {
     far.constructions = [{ row: 0, col: 0, kind: 'tower', progress: 2 }];
     const i = FEATURES.indexOf('material.towerStake');
     expect(evalFeatures(near, 1)[i]!).toBeGreaterThan(evalFeatures(far, 1)[i]!);
+  });
+});
+
+describe('ward generation keeps wards up', () => {
+  const setup = (energy: number) =>
+    startState([
+      mkUnit({ id: 1, player: 1, type: 'knight', row: 10, col: 10, wardedBy: 4 }),
+      mkUnit({ id: 2, player: 1, type: 'knight', row: 10, col: 11 }),
+      mkUnit({ id: 4, player: 1, type: 'mage', row: 9, col: 9, energy, maxEnergy: 20 }),
+    ]);
+  const wardTargets = (st: GameState) =>
+    generateActionsForUnit(st, 4)
+      .filter((a) => a.kind === 'mage-ward')
+      .flatMap((a) => (a.kind === 'mage-ward' ? a.toggleUnitIds : []));
+
+  it('offers wards on unshielded allies but never lifts one while the mage has energy', () => {
+    const t = wardTargets(setup(10));
+    expect(t).toContain(2);
+    expect(t).toContain(4);
+    expect(t).not.toContain(1); // already warded by this mage: lifting it is not offered
+  });
+
+  it('lifts a ward only in the extreme case: mage almost out of energy', () => {
+    expect(wardTargets(setup(1))).toContain(1);
   });
 });

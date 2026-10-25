@@ -37,6 +37,7 @@
     },
     "onTower": 3000,
     "towerStake": 2500,
+    "wardCover": 2500,
     "wipeout": 100000,
     "perEnergy": 0
   },

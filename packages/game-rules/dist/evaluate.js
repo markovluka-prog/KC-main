@@ -64,6 +64,7 @@ export const FEATURES = [
     ...TYPE_NAMES.map((t) => `material.byType.${t}`),
     'material.onTower',
     'material.towerStake',
+    'material.wardCover',
     'material.presence',
     'material.wipeout',
     'castle.captureUndefended',
@@ -124,6 +125,7 @@ const FI_economy_ruinsControlBonus = F['economy.ruinsControlBonus'];
 const FI_focus_woundedEnemyMax = F['focus.woundedEnemyMax'];
 const FI_material_onTower = F['material.onTower'];
 const FI_material_towerStake = F['material.towerStake'];
+const FI_material_wardCover = F['material.wardCover'];
 const FI_material_perArmor = F['material.perArmor'];
 const FI_material_perDamage = F['material.perDamage'];
 const FI_material_perEnergy = F['material.perEnergy'];
@@ -511,6 +513,13 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         out[TYPE_F[u.type] ?? TYPE_F.archer] += sign;
         if (onTower(u))
             out[FI_material_onTower] += sign;
+        // A standing ward is worth keeping up: it eats a whole hit for free until
+        // the mage runs dry (full credit from 5 energy; nothing at 0).
+        if (u.wardedBy) {
+            const we = LIVE_MAGES.get(u.wardedBy);
+            if (we !== undefined)
+                out[FI_material_wardCover] += sign * Math.min(1, we / 5);
+        }
     }
     // Towers and tower sites are neutral, so without this a half-built tower is
     // worth nothing and finishing it is worth nothing. Credit each one (progress

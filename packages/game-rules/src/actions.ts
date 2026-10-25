@@ -246,9 +246,18 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
   // toggled per living ally. Offered as one action per ally so a search can
   // pick any single unit to (un)ward for 1 move, matching how the client
   // lets the player build up a multi-select batch one click at a time.
+  // Wards are meant to stay up: cast on every ally that has none (a unit
+  // already shielded by ANOTHER living mage is left alone), and lift one only
+  // in the extreme case — this mage nearly out of energy, so the ward could no
+  // longer pay for a hit (the mage would die instead).
   for (const ally of alive) {
     if (ally.player !== mage.player) continue;
-    out.push({ kind: 'mage-ward', unitId: mage.id, toggleUnitIds: [ally.id] });
+    const holder = ally.wardedBy ? alive.find((u) => u.id === ally.wardedBy && u.type === 'mage') : undefined;
+    if (!holder) {
+      out.push({ kind: 'mage-ward', unitId: mage.id, toggleUnitIds: [ally.id] });
+    } else if (holder.id === mage.id && energy < 2) {
+      out.push({ kind: 'mage-ward', unitId: mage.id, toggleUnitIds: [ally.id] });
+    }
   }
 
   // mage-burn-bridge: any bridge the mage can afford to reach.
