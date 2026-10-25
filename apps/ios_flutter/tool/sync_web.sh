@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
 
 echo "→ сборка веб-игры"
-( cd "$ROOT" && pnpm --filter @kc/game-rules build && pnpm --filter @kc/web build )
+# game-rules отдельно собирать не нужно: веб-сборка берёт его из исходников (alias в vite.config.ts).
+( cd "$ROOT" && NODE_OPTIONS="--max-old-space-size=6144" pnpm --filter @kc/web build )
 
 echo "→ копирование в assets/www"
 rm -rf assets/www && mkdir -p assets/www
