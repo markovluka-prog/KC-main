@@ -91,7 +91,7 @@
     "heavilyThreatenedPenalty": 2500,
     "perDamagePointTaken": 600,
     "lethalValueFraction": 1,
-    "killValueFraction": 1,
+    "killValueFraction": 0.6,
     "hangingScale": 1
   },
   "cohesion": {
