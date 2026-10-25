@@ -39,6 +39,7 @@ export interface AIWeights {
         onTower: number;
         towerStake: number;
         wardCover: number;
+        danger: number;
         wipeout: number;
     };
     castle: {

@@ -20,7 +20,7 @@
  * silently stalling turn after turn once a hidden pickup got claimed.
  */
 
-import { turnCost } from './facing.js';
+import { applyFacingDamage, turnCost } from './facing.js';
 import { canEquipGear, type ServerAction } from './apply.js';
 import { generateAllActions } from './moves.js';
 import { inCastleZone, castleColFor, castleRowFor } from './apply.js';
@@ -219,6 +219,16 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
       const maxDamage = Math.floor((energy - distCost) / MAGE_ATTACK_ENERGY_PER_HP);
       if (maxDamage >= 1 && !passive) {
         out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: maxDamage });
+        // The cheapest shot that still KILLS: leaves energy (and the other
+        // mages' shots) for a second target or a ward instead of overkilling.
+        if (!(other.wardedBy && state.units.some((u) => u.id === other.wardedBy && u.hp > 0))) {
+          for (let d = 2; d < maxDamage; d++) {
+            if (applyFacingDamage(d, other, mage.row, mage.col) - other.armor >= other.hp) {
+              out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: d });
+              break;
+            }
+          }
+        }
         if (maxDamage > 1) {
           out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: 1 });
         }

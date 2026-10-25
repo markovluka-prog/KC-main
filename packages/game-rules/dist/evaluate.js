@@ -65,6 +65,7 @@ export const FEATURES = [
     'material.onTower',
     'material.towerStake',
     'material.wardCover',
+    'material.danger',
     'material.presence',
     'material.wipeout',
     'castle.captureUndefended',
@@ -126,6 +127,7 @@ const FI_focus_woundedEnemyMax = F['focus.woundedEnemyMax'];
 const FI_material_onTower = F['material.onTower'];
 const FI_material_towerStake = F['material.towerStake'];
 const FI_material_wardCover = F['material.wardCover'];
+const FI_material_danger = F['material.danger'];
 const FI_material_perArmor = F['material.perArmor'];
 const FI_material_perDamage = F['material.perDamage'];
 const FI_material_perEnergy = F['material.perEnergy'];
@@ -466,6 +468,26 @@ function growPairBuffers(n) {
     OPP_TOWER = new Uint8Array(n);
     OPP_VAL = new Float64Array(n);
 }
+/**
+ * How dangerous a unit is to the other side: its damage output, boosted for
+ * reach (ranged units and mages hit without being hit back) and speed
+ * (cavalry). Killing — or protecting — the dangerous ones is worth more than
+ * their bare material, so targets are picked by threat, not just by price.
+ */
+function dangerOf(u) {
+    switch (u.type) {
+        case 'mage':
+            return Math.min(10, (u.energy ?? 0) / 2) * 1.5; // its shot, any range
+        case 'archer':
+        case 'crossbow':
+        case 'catapult':
+            return u.damage * 1.5;
+        case 'cavalry':
+            return u.damage * 1.3;
+        default:
+            return u.damage;
+    }
+}
 /** Mage energy worth hoarding for wards/heals; above this it is free to shoot with. */
 const ENERGY_RESERVE = 8;
 /** Share of a ward-absorbed hit still counted as threat (it drains the mage). */
@@ -524,6 +546,7 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         out[TYPE_F[u.type] ?? TYPE_F.archer] += sign;
         if (onTower(u))
             out[FI_material_onTower] += sign;
+        out[FI_material_danger] += sign * dangerOf(u);
         // A standing ward is worth keeping up: it eats a whole hit for free until
         // the mage runs dry (full credit from 5 energy; nothing at 0).
         if (u.wardedBy) {

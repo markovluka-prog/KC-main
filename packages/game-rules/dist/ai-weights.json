@@ -33,11 +33,12 @@
             "crossbow": 1000,
             "archer": 900,
             "catapult": 900,
-            "mage": 900
+            "mage": 4500
         },
         "onTower": 3000,
         "towerStake": 2500,
         "wardCover": 2500,
+        "danger": 500,
         "wipeout": 100000,
         "perEnergy": 250
     },
