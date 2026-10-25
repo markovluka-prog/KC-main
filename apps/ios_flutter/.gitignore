@@ -1,0 +1,6 @@
+# Генерируется tool/sync_web.sh и flutter create
+assets/www/
+.dart_tool/
+.flutter-plugins*
+build/
+pubspec.lock

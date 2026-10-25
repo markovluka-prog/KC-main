@@ -1,0 +1,30 @@
+name: knights_castles
+description: "Рыцари и Замки — iOS-оболочка (Flutter) с игрой внутри приложения, работает офлайн."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_inappwebview: ^6.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  ios: true
+  image_path: "assets/icon/icon.png"
+  remove_alpha_ios: true
+
+flutter:
+  uses-material-design: false
+  # ASSETS-BEGIN (генерируется tool/sync_web.sh — не править вручную)
+  assets:
+    - assets/www/
+  # ASSETS-END
