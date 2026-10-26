@@ -19,6 +19,7 @@
  * depend on it.
  */
 
+import { recordAiTurn } from './ai-log.js';
 import {
   createInitialState,
   planTurnFor,
@@ -240,6 +241,7 @@ export function beamPlanFor(
   // Same entry point as scripts/ladder.mjs, so the difficulty measured there
   // is exactly the one shipped here.
   const actions = planTurnFor(state, me, config, state.turnNumber + 1, weights);
+  recordAiTurn(state, me, config.label, actions);
 
   const plan: Array<{ unitId: number; action: AIAction }> = [];
   for (const a of actions) {

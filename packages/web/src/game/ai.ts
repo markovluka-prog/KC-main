@@ -48,6 +48,7 @@ import { AI_DIFFICULTY, type AIConfig, type AIDifficulty } from './ai-config.js'
 import RAW_WEIGHTS from './ai-weights.json';
 import { AISearchWorker, isSupported as isWorkerSupported } from './ai-worker-client.js';
 import type { WorkerState } from './ai-worker-protocol.ts';
+import { recordAiTurn } from './ai-log.js';
 import { beamPlanFor, snapshotGameState, toPlanEntry } from './beam-bridge.js';
 import { beamPoolSupported, planTurnInPool } from './beam-pool.js';
 import { applyAction as rulesApply, generateActionsForPlayer, mulberry32 as rulesRng, applyFacingDamage, baseWeightsFor, facingOf, facingToward, scaleWeights, turnCost, winChance, type Facing, type ServerAction, type GameState } from '@kc/game-rules';
@@ -5656,6 +5657,7 @@ export class AIPlayer {
       game.renderSidebar();
     })
       .then((actions) => {
+        recordAiTurn(state, this.player, beamConfig.label, actions);
         if (gen === this.beamGen) this.beamPlan = toEntries(actions);
       })
       .catch(() => {

@@ -87,6 +87,7 @@ import { Unit } from './game/Unit.js';
 import { Board } from './game/Board.js';
 import { AIPlayer } from './game/ai.js';
 import { FfaBot } from './game/ffa-bot.js';
+import { aiLogSize, clearAiLog, downloadAiLog } from './game/ai-log.js';
 import { ApiClient } from './api/client.js';
 import { isNativeAuthAvailable } from './net/auth-google.js';
 import { isAdminEmail } from './admin.js';
@@ -1441,6 +1442,7 @@ const AI_PERSONAS = {
           this.backToMenu();
           return;
         }
+        if (action === "download-ai-log") { downloadAiLog(); return; }
         if (action === "restart") {
           this.stopConfetti();
           this.startMatch(this.mode, this.aiDifficulty, this.currentStoryTask, this.lastCustomPositions);
@@ -1820,6 +1822,7 @@ const AI_PERSONAS = {
             this.requestRematch();
             return;
           }
+          if (action === "download-ai-log") { downloadAiLog(); return; }
           if (action === "restart") {
             this.stopConfetti();
             this.startMatch(this.mode, this.aiDifficulty, this.currentStoryTask, this.lastCustomPositions);
@@ -4162,6 +4165,7 @@ const AI_PERSONAS = {
     }
 
     startMatch(mode, difficulty, storyTask, customPositions?) {
+      clearAiLog(); // a new game starts a fresh bot log
       this.undoStack = [];
       this.hideNewMenu();
       document.getElementById('menuLeft')?.classList.remove('panel-open');
@@ -7094,7 +7098,10 @@ const AI_PERSONAS = {
         ? '<button class="btn restart" data-action="online-rematch">' + tr('Реванш') + '</button>' +
           '<button class="btn secondary" data-action="back-menu">' + tr('В меню') + '</button>'
         : '<button class="btn restart" data-action="restart">' + tr('Рестарт') + '</button>' +
-          '<button class="btn secondary" data-action="back-menu">' + tr('В меню') + '</button>';
+          '<button class="btn secondary" data-action="back-menu">' + tr('В меню') + '</button>' +
+          (this.mode === 'ai' && aiLogSize() > 0
+            ? '<button class="btn secondary" data-action="download-ai-log">📋 ' + tr('Лог ИИ') + '</button>'
+            : '');
 
       this.victoryOverlay.innerHTML =
         '<div class="victory-panel victory-panel--entry">' +
@@ -10608,6 +10615,7 @@ sacrificeEval = true
   // Expose the live game on window so e2e tests (and live debugging) can
   // introspect or drive state transitions without scraping the DOM.
   (window as any).__kcGame = game;
+  (window as any).__kcDownloadAILog = downloadAiLog;
   (window as any).COLS = COLS;
   (window as any).ROWS = ROWS;
   (window as any).CELL_SIZE = CELL_SIZE;
