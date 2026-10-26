@@ -156,6 +156,8 @@ export interface AIGameAPI {
    *  it is selected. The search must respect it, or it plans turns the game
    *  will refuse to execute. Optional so older AIGameAPI stubs still typecheck. */
   readonly activatedCount?: number;
+  /** Live turn counter (1 on the first turn; +1 per end-turn). */
+  readonly turnNumber?: number;
   readonly maxActivatedPerTurn?: number;
   readonly board: Board;
   selectedUnit: Unit | null;

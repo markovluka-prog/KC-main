@@ -152,6 +152,11 @@ export function snapshotGameState(game: AIGameAPI): GameState {
     terrain,
   });
   state.currentPlayer = game.currentPlayer;
+  // The turn counter drives the mage's first-turn rule (no attack/burn on turns
+  // 1-2). createInitialState() starts it at 1, so without copying the live value
+  // the search believed it was the first turn for the WHOLE game and never let
+  // a mage shoot, drain an enemy or burn a bridge.
+  state.turnNumber = game.turnNumber ?? state.turnNumber;
   state.activatedCount = game.activatedCount ?? 0;
   // Per-unit backpacks are already carried by `units` above — there's no
   // shared per-player inventory to copy across any more.

@@ -68,6 +68,14 @@ function makeGame(player1Bottom: boolean, units: Unit[], currentPlayer: 1 | 2 = 
   return stub as unknown as AIGameAPI;
 }
 
+describe('snapshotGameState — turn counter', () => {
+  it('copies the live turnNumber (the mage first-turn rule depends on it)', () => {
+    const game = makeGame(false, [new Unit(1, 2, 'knight', 10, 10)]);
+    (game as unknown as { turnNumber: number }).turnNumber = 17;
+    expect(snapshotGameState(game).turnNumber).toBe(17);
+  });
+});
+
 describe('snapshotGameState — orientation normalisation', () => {
   it('player1Bottom=false: physical rows pass through unchanged, castle columns pass through', () => {
     const knight = new Unit(1, 2, 'knight', 10, 10);
