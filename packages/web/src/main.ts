@@ -1006,6 +1006,7 @@ const AI_PERSONAS = {
       this.ai = new AIPlayer(this, 2, 'medium');
       this.ffaBot = new FfaBot(this);
       this.ffaBotLevels = [];
+      this.lastWardCost = 0;
       this.ffaFactions = FFA_FACTIONS;
       this.playerNames = null;
       this._pendingLobby = null;
@@ -4968,7 +4969,7 @@ const AI_PERSONAS = {
       // Hit particles + floating damage text
       if (warded) {
         this.createExplosion(targetX, targetY, "#6495ed", 8);
-        this.createFloatingText("🛡️ 0", targetX, targetY - 10, "#6495ed", 20);
+        this.createFloatingText("🛡️ −" + this.lastWardCost, targetX, targetY - 10, "#6495ed", 20);
         this.lastEvent = tr("{attacker} атакует {target}, но щит поглощает удар!", {
           attacker: this.trName(this.selectedUnit.name),
           target: this.trName(target.name),
@@ -5105,7 +5106,7 @@ const AI_PERSONAS = {
         target.triggerHitFlash();
         if (warded) {
           this.createExplosion(targetX, targetY, "#6495ed", 8);
-          this.createFloatingText("🛡️ 0", targetX, targetY - 10, "#6495ed", 20);
+          this.createFloatingText("🛡️ −" + this.lastWardCost, targetX, targetY - 10, "#6495ed", 20);
           names.push(this.trName(target.name) + " (🛡️)");
           continue;
         }
@@ -9685,7 +9686,7 @@ const AI_PERSONAS = {
 
       if (warded) {
         this.createExplosion(toX, toY, "#6495ed", 8);
-        this.createFloatingText("🛡️ 0", toX, toY - 10, "#6495ed", 20);
+        this.createFloatingText("🛡️ −" + this.lastWardCost, toX, toY - 10, "#6495ed", 20);
         this.lastEvent = tr("{attacker} поражает {target}, но щит поглощает удар!", {
           attacker: this.trName(unit.name), target: this.trName(target.name),
         });
@@ -9744,7 +9745,7 @@ const AI_PERSONAS = {
       const warded = this.absorbWithWard(target, 1);
       if (warded) {
         target.triggerHitFlash();
-        this.createFloatingText("🛡️ 0", toX, toY - 10, "#6495ed", 18);
+        this.createFloatingText("🛡️ −" + this.lastWardCost, toX, toY - 10, "#6495ed", 18);
         this.lastEvent = tr("{attacker} пытается высосать жизнь, но щит держит.", {
           attacker: this.trName(unit.name),
         });
@@ -9752,8 +9753,7 @@ const AI_PERSONAS = {
         target.hp -= 1;
         unit.energy = Math.min(unit.maxEnergy, unit.energy + MAGE_DRAIN_ENERGY_PER_HP);
         target.triggerHitFlash();
-        this.createFloatingText("-1 ❤️", toX, toY - 10, "#ff6b6b", 18);
-        this.createFloatingText("+" + MAGE_DRAIN_ENERGY_PER_HP + " ⚡", toX, toY + 6, "#c77dff", 16);
+        this.createFloatingText("-1 ❤️  +" + MAGE_DRAIN_ENERGY_PER_HP + " ⚡", toX, toY - 10, "#ff6b6b", 18);
         this.lastEvent = tr("{attacker} высасывает жизнь из {target}.", {
           attacker: this.trName(unit.name), target: this.trName(target.name),
         });
@@ -9983,9 +9983,10 @@ const AI_PERSONAS = {
         return false;
       }
       const cost = Math.floor(rawDamage / MAGE_WARD_ENERGY_PER_DAMAGE);
+      this.lastWardCost = cost;
       if (mage.energy >= cost) {
         mage.energy -= cost;
-        this.createFloatingText("🛡️-" + cost, mage.col * CELL_SIZE + CELL_SIZE / 2, mage.row * CELL_SIZE + CELL_SIZE / 2 - 10, "#6495ed", 14);
+        this.lastWardCost = cost; // shown once, on the warded target (see the hit labels)
       } else {
         this.lastEvent = tr("{name} не выдержал перегрузку щита и погиб!", { name: this.trName(mage.name) });
         this.dropUnitGear(mage);
