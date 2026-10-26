@@ -1,0 +1,23 @@
+# Будит Codespace, если он уснул. Нужен секрет CODESPACE_WAKE_TOKEN:
+# GitHub → Settings → Developer settings → Personal access tokens (classic) со scope «codespace»,
+# затем репозиторий → Settings → Secrets and variables → Actions → New secret.
+name: Wake Codespace
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    if: ${{ vars.CODESPACE_NAME != '' }}
+    steps:
+      - name: Start the codespace if it is not running
+        env:
+          GH_TOKEN: ${{ secrets.CODESPACE_WAKE_TOKEN }}
+          NAME: ${{ vars.CODESPACE_NAME }}
+        run: |
+          state=$(gh api "user/codespaces/$NAME" --jq .state || echo Unknown)
+          echo "state: $state"
+          if [ "$state" != "Available" ]; then
+            gh api -X POST "user/codespaces/$NAME/start" --jq .state
+          fi
