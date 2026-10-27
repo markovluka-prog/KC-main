@@ -136,11 +136,13 @@ export const MAGE_SHOT_BONUS = 5500;
 /** The shot only counts while the mage stays able to pay for a ward afterwards. */
 const SHOT_KEEPS_ENERGY = 5;
 export function shotBonus(actions: readonly ServerAction[], state: GameState, me: Player): number {
+  // Judge each shooter by its own energy: one drained mage used to cancel the
+  // bonus for every other mage's shot in the plan.
   let n = 0;
-  for (const a of actions) if (a.kind === 'mage-attack') n++;
-  if (n === 0) return 0;
-  for (const u of state.units) {
-    if (u.player === me && u.type === 'mage' && u.hp > 0 && (u.energy ?? 0) < SHOT_KEEPS_ENERGY) return 0;
+  for (const a of actions) {
+    if (a.kind !== 'mage-attack') continue;
+    const shooter = state.units.find((u) => u.id === a.unitId);
+    if (shooter && shooter.hp > 0 && (shooter.energy ?? 0) >= SHOT_KEEPS_ENERGY) n++;
   }
   return n * MAGE_SHOT_BONUS;
 }

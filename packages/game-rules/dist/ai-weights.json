@@ -51,6 +51,7 @@
         "raidThreatRadius": 8,
         "raidThreatPerCell": 7000,
         "approachPerCell": 150,
+        "spreadPenaltyPerCell": 200,
         "huntPerCell": 60
     },
     "focus": {

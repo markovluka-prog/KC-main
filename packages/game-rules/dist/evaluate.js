@@ -49,6 +49,11 @@ export const CHANCE_W = CHANCE_RAW;
  * Folded into the approach/hunt features, so the weights stay per-cell.
  */
 const CASTLE_APPROACH_MULTIPLIER = 15;
+/** How many cells of advance a mage's position counts (a plain unit counts 1).
+ *  Was 2, which drew mages to the front line where they were shot down. */
+const MAGE_ADVANCE_FACTOR = 1;
+/** Cells a unit may lead the army's mean advance before the spread penalty bites. */
+const SPREAD_SLACK = 2;
 /**
  * Feature names = weight paths into AIWeights, in feature-vector order.
  * evaluate() = Σ weight(path) × feature. Signs live in the features (a
@@ -104,6 +109,7 @@ export const FEATURES = [
     'tempo.dmgTaken',
     'tempo.kill',
     'tempo.hanging',
+    'castle.spreadPenaltyPerCell',
 ];
 const F = Object.fromEntries(FEATURES.map((n, i) => [n, i]));
 const TYPE_F = Object.fromEntries(TYPE_NAMES.map((t) => [t, F[`material.byType.${t}`]]));
@@ -116,6 +122,7 @@ const FI_castle_approachPerCell = F['castle.approachPerCell'];
 const FI_castle_captureDefended = F['castle.captureDefended'];
 const FI_castle_captureUndefended = F['castle.captureUndefended'];
 const FI_castle_huntPerCell = F['castle.huntPerCell'];
+const FI_castle_spreadPenaltyPerCell = F['castle.spreadPenaltyPerCell'];
 const FI_castle_lossDefended = F['castle.lossDefended'];
 const FI_castle_lossUndefended = F['castle.lossUndefended'];
 const FI_castle_raidThreatPerCell = F['castle.raidThreatPerCell'];
@@ -443,6 +450,8 @@ function towerSiteWeight(state, row, col) {
 }
 /** Ids of living mages, refreshed per evalFeatures() call (ward checks). */
 const LIVE_MAGES = new Map();
+/** Energy already spoken for by earlier hits in the same threat tally, per warding mage. */
+const WARD_USED = new Map();
 // Per-unit scratch for the fused pair pass in evalFeatures (no per-call allocation).
 let MIN_DIST = new Float64Array(32);
 let MY_BEST = new Float64Array(32);
@@ -492,6 +501,30 @@ function dangerOf(u) {
 const ENERGY_RESERVE = 8;
 /** Share of a ward-absorbed hit still counted as threat (it drains the mage). */
 const WARD_THREAT_SHARE = 0.35;
+/**
+ * afterArmor for a SUM of hits on one position (the next-turn reach scan):
+ * a ward pays every absorbed point from one shared pool of the mage's energy,
+ * so once the hits already counted have used it up, the rest land in full
+ * (and the mage dies). Checking each attacker against the full pool, as
+ * afterArmor alone does, made a warded unit look safe against any number of
+ * attackers, so it walked into a ring of enemies or took a mage down with it.
+ */
+function afterArmorPooled(state, raw, t) {
+    if (t.wardedBy) {
+        const e = LIVE_MAGES.get(t.wardedBy);
+        if (e !== undefined) {
+            const used = WARD_USED.get(t.wardedBy) ?? 0;
+            if (e >= used + raw) {
+                WARD_USED.set(t.wardedBy, used + raw);
+                return Math.min(raw * WARD_THREAT_SHARE, Math.max(0, raw - t.armor));
+            }
+        }
+    }
+    let dmg = Math.max(0, raw - t.armor);
+    if (state.shieldTurns[t.player] > 0)
+        dmg = Math.max(0, dmg - 2);
+    return dmg;
+}
 function afterArmor(state, raw, t) {
     // A ward absorbs the whole hit, paid 1:1 from the warding mage's energy. If
     // that energy is short the unit is still spared but the MAGE dies
@@ -528,6 +561,7 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         return false;
     };
     LIVE_MAGES.clear();
+    WARD_USED.clear();
     for (const u of state.units)
         if (u.type === 'mage' && u.hp > 0)
             LIVE_MAGES.set(u.id, mageEnergy(state, u));
@@ -562,11 +596,11 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
     // as a fraction of BUILD_WORK_TOTAL, finished = 1) to the side with the
     // nearest unit within 3 cells, so starting, continuing and completing a
     // tower each raise the score.
-    const credit = (r, c, fracRaw) => {
+    const credit = (r, c, fracRaw, reach = 4) => {
         const frac = fracRaw * towerSiteWeight(state, r, c);
         if (frac === 0)
             return;
-        let best = 4, side = 0;
+        let best = reach, side = 0;
         for (const u of state.units) {
             if (u.hp <= 0)
                 continue;
@@ -582,9 +616,12 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
     };
     for (const t of towerList)
         credit(t.row, t.col, 1);
+    // An unfinished site only counts for a unit standing right beside it: with
+    // the old 3-cell reach a knight could walk off after the first turn of work,
+    // keep the credit, and the tower sat half-built for dozens of turns.
     for (const c of state.constructions ?? [])
         if (c.kind === 'tower')
-            credit(c.row, c.col, Math.min(1, c.progress / BUILD_WORK_TOTAL));
+            credit(c.row, c.col, Math.min(1, c.progress / BUILD_WORK_TOTAL), 2);
     const myCount = myUnits.length;
     const oppCount = oppUnits.length;
     out[FI_material_presence] = myCount - oppCount;
@@ -673,7 +710,7 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
             // they can reach me next turn
             raw = reachDamage(state, ou, mu, OPP_TOWER[b] === 1);
             if (raw >= 0)
-                THREAT_TOTAL[a] += afterArmor(state, raw, mu);
+                THREAT_TOTAL[a] += afterArmorPooled(state, raw, mu);
         }
     }
     // ── GOAL 3b: Hunt down the last survivors ────────────────────────────────
@@ -705,11 +742,29 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         let oppAdvance = 0;
         // A mage counts double: the closer it stands to the fight, the less energy
         // its attacks/heals burn on distance, leaving more for wards.
-        for (const u of myUnits)
-            myAdvance += (28 - (toOpp[u.row * COLS + u.col] + 2)) * (u.type === 'mage' ? 2 : 1);
+        let plainAdvance = 0;
+        for (const u of myUnits) {
+            const adv = 28 - (toOpp[u.row * COLS + u.col] + 2);
+            plainAdvance += adv;
+            myAdvance += adv * (u.type === 'mage' ? MAGE_ADVANCE_FACTOR : 1);
+        }
         for (const u of oppUnits)
-            oppAdvance += (28 - (toMe[u.row * COLS + u.col] + 2)) * (u.type === 'mage' ? 2 : 1);
+            oppAdvance += (28 - (toMe[u.row * COLS + u.col] + 2)) * (u.type === 'mage' ? MAGE_ADVANCE_FACTOR : 1);
         out[FI_castle_approachPerCell] = (myAdvance - 0.4 * oppAdvance) * CASTLE_APPROACH_MULTIPLIER;
+        // The pull above is linear per unit, so nothing stops one unit running
+        // ahead of the rest: the army reached the bridge in single file and was
+        // eaten piece by piece. Charge whoever leads the army by more than
+        // SPREAD_SLACK cells, so units advance together.
+        if (myCount > 2) {
+            const mean = plainAdvance / myCount;
+            let ahead = 0;
+            for (const u of myUnits) {
+                const lead = 28 - (toOpp[u.row * COLS + u.col] + 2) - mean - SPREAD_SLACK;
+                if (lead > 0)
+                    ahead += lead;
+            }
+            out[FI_castle_spreadPenaltyPerCell] = -ahead * CASTLE_APPROACH_MULTIPLIER;
+        }
     }
     // ── GOAL 5: Spacing — ranged keep distance, melee close in ───────────────
     for (let a = 0; a < nM; a++) {
@@ -776,7 +831,9 @@ export function evalFeatures(state, me, out = new Float64Array(FEATURES.length))
         const mu = myUnits[a];
         const totalThreat = THREAT_TOTAL[a];
         if (totalThreat >= mu.hp) {
-            hanging -= Math.min(W.threat.hangingMax, W.threat.hangingBase + MY_VAL[a] * W.threat.hangingValueFraction);
+            // A mage carries every ward in the army (its death drops them all), so
+            // leaving it in reach costs double.
+            hanging -= Math.min(W.threat.hangingMax, W.threat.hangingBase + MY_VAL[a] * W.threat.hangingValueFraction) * (mu.type === 'mage' ? 2 : 1);
         }
         else if (totalThreat > mu.hp * W.threat.heavilyThreatenedRatio) {
             out[FI_threat_heavilyThreatenedPenalty] -= 1;

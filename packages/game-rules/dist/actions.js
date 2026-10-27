@@ -188,7 +188,11 @@ function generateMageActions(state, mage) {
             const distCost = chebyshev * MAGE_ATTACK_ENERGY_PER_CELL;
             const passive = state.turnNumber <= MAGE_PASSIVE_TURNS; // first turn: no mage attacks
             const maxDamage = Math.floor((energy - distCost) / MAGE_ATTACK_ENERGY_PER_HP);
-            if (maxDamage >= 1 && !passive) {
+            // A shot the target's ward soaks up fully only drains the enemy mage 1:1
+            // while costing this one the damage plus the distance: a losing trade.
+            const holder = other.wardedBy ? alive.find((u) => u.id === other.wardedBy && u.type === 'mage') : undefined;
+            const soaked = holder !== undefined && (holder.energy ?? 0) >= maxDamage;
+            if (maxDamage >= 1 && !passive && !soaked) {
                 out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: maxDamage });
                 // The cheapest shot that still KILLS: leaves energy (and the other
                 // mages' shots) for a second target or a ward instead of overkilling.

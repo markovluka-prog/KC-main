@@ -50,6 +50,7 @@ export interface AIWeights {
         raidThreatRadius: number;
         raidThreatPerCell: number;
         approachPerCell: number;
+        spreadPenaltyPerCell: number;
         huntPerCell: number;
     };
     focus: {
