@@ -3,6 +3,8 @@ import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
   root: '.',
+  // GitHub Pages serves the site from /<repo>/; the deploy workflow sets VITE_BASE.
+  base: process.env.VITE_BASE ?? '/',
   publicDir: 'public',
   resolve: {
     alias: [
