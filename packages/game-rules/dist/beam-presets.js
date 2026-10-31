@@ -95,7 +95,7 @@ export const BEAM_DIFFICULTY = {
         replyBeamWidth: 1,
         replyCandidates: 1,
         noise: 0,
-        rollout: { candidates: 32, turns: 7, samples: 3, noise: 0.3, finalists: 8 },
+        rollout: { candidates: 32, turns: 7, samples: 4, noise: 0.3, finalists: 10 },
     },
 };
 /** Convert a difficulty preset into the options `planTurn` expects. */

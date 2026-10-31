@@ -534,6 +534,8 @@ const LIVE_MAGES = new Map<number, number>();
 
 /** Energy already spoken for by earlier hits in the same threat tally, per warding mage. */
 const WARD_USED = new Map<number, number>();
+/** Warding mages whose pool the tally's hits overflow: the ward breaks and the mage dies. */
+const WARD_BROKEN = new Set<number>();
 
 // Per-unit scratch for the fused pair pass in evalFeatures (no per-call allocation).
 let MIN_DIST = new Float64Array(32);
@@ -605,6 +607,7 @@ function afterArmorPooled(state: GameState, raw: number, t: SerializedUnit): num
         WARD_USED.set(t.wardedBy, used + raw);
         return Math.min(raw * WARD_THREAT_SHARE, Math.max(0, raw - t.armor));
       }
+      WARD_BROKEN.add(t.wardedBy);
     }
   }
   let dmg = Math.max(0, raw - t.armor);
@@ -646,6 +649,7 @@ export function evalFeatures(state: GameState, me: Player, out: Float64Array = n
   };
   LIVE_MAGES.clear();
   WARD_USED.clear();
+  WARD_BROKEN.clear();
   for (const u of state.units) if (u.type === 'mage' && u.hp > 0) LIVE_MAGES.set(u.id, mageEnergy(state, u));
 
   for (const u of state.units) {
@@ -884,7 +888,7 @@ export function evalFeatures(state: GameState, me: Player, out: Float64Array = n
   for (let a = 0; a < nM; a++) {
     const mu = myUnits[a]!;
     const totalThreat = THREAT_TOTAL[a]!;
-    if (totalThreat >= mu.hp) {
+    if (totalThreat >= mu.hp || WARD_BROKEN.has(mu.id)) {
       // A mage carries every ward in the army (its death drops them all), so
       // leaving it in reach costs double.
       hanging -= Math.min(W.threat.hangingMax, W.threat.hangingBase + MY_VAL[a]! * W.threat.hangingValueFraction) * (mu.type === 'mage' ? 2 : 1);

@@ -54,6 +54,9 @@ import { boardFromState, boardFromStateScratch, toUnitState } from './board-stat
  * always spends the crafting unit's OWN backpack, not a shared per-player pool.
  * Recipes are pre-split into [part, n] pairs once (this runs per unit per
  * recipe on every search node). */
+/** A soaked mage shot is still worth offering when it leaves the warding mage with less energy than this. */
+const WARD_BREAKABLE_LEFT = 8;
+
 const RECIPE_ENTRIES = new WeakMap<object, Array<[PartName, number]>>();
 function canAffordFromBackpack(backpack: Backpack, recipe: Partial<Record<PartName, number>>): boolean {
   let entries = RECIPE_ENTRIES.get(recipe);
@@ -220,7 +223,10 @@ function generateMageActions(state: GameState, mage: SerializedUnit): ServerActi
       // A shot the target's ward soaks up fully only drains the enemy mage 1:1
       // while costing this one the damage plus the distance: a losing trade.
       const holder = other.wardedBy ? alive.find((u) => u.id === other.wardedBy && u.type === 'mage') : undefined;
-      const soaked = holder !== undefined && (holder.energy ?? 0) >= maxDamage;
+      // Unless it leaves the holder so low that the next hit breaks the ward
+      // (the mage then dies): that drain-then-strike combo is how a mage
+      // takes a whole warded group apart, and the search has to see it.
+      const soaked = holder !== undefined && (holder.energy ?? 0) - maxDamage >= WARD_BREAKABLE_LEFT;
       if (maxDamage >= 1 && !passive && !soaked) {
         out.push({ kind: 'mage-attack', unitId: mage.id, targetRow: other.row, targetCol: other.col, damage: maxDamage });
         // The cheapest shot that still KILLS: leaves energy (and the other
