@@ -109,15 +109,17 @@ const SHOT_KEEPS_ENERGY = 5;
 export function shotBonus(actions, state, me) {
     // Judge each shooter by its own energy: one drained mage used to cancel the
     // bonus for every other mage's shot in the plan.
-    let n = 0;
+    // One bonus per mage, not per shot: with a bonus on every shot two 1-damage
+    // jabs outscored the single shot that killed the target.
+    const shooters = new Set();
     for (const a of actions) {
         if (a.kind !== 'mage-attack')
             continue;
         const shooter = state.units.find((u) => u.id === a.unitId);
         if (shooter && shooter.hp > 0 && (shooter.energy ?? 0) >= SHOT_KEEPS_ENERGY)
-            n++;
+            shooters.add(a.unitId);
     }
-    return n * MAGE_SHOT_BONUS;
+    return shooters.size * MAGE_SHOT_BONUS;
 }
 function searchPlans(root, me, options) {
     const maxDepth = options.maxDepth ?? MAX_PLAN_DEPTH;
